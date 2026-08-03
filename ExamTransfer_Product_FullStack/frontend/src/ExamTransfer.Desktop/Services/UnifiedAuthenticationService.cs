@@ -8,7 +8,8 @@ namespace ExamTransfer.Desktop.Services;
 public sealed record UnifiedLoginResult(
     CurrentAccountDto Account,
     string AccessToken,
-    AuthSessionAuthority Authority);
+    AuthSessionAuthority Authority,
+    string? RefreshToken = null);
 
 public interface IUnifiedAuthenticationService
 {
@@ -45,26 +46,13 @@ public sealed class UnifiedAuthenticationService(
             cancellationToken);
         var authoritative = cloudIdentity.Account;
 
-        // -----------------------------------------------------------------------------
-        // GUARD CLAUSE: Tự động khôi phục role cho Học sinh nếu xảy ra Data Drift trên Cloud
-        // -----------------------------------------------------------------------------
-        if (authoritative.Role == UserRole.Teacher &&
-            !string.IsNullOrWhiteSpace(authoritative.StudentCode))
-        {
-            FrontendLogger.LogWarning(
-                $"[RoleGuard] Phát hiện Data Drift: Tài khoản {authoritative.Username} (Mã SV: {authoritative.StudentCode}) " +
-                "mang role 'Teacher' trên Cloud profile. Tiến hành override tạm thời về 'Student' để ngăn crash.");
-
-            authoritative = authoritative with { Role = UserRole.Student };
-        }
-        // -----------------------------------------------------------------------------
-
         if (authoritative.Role == UserRole.Student)
         {
             return new(
                 authoritative,
                 cloudIdentity.AccessToken,
-                AuthSessionAuthority.Supabase);
+                AuthSessionAuthority.Supabase,
+                cloudIdentity.RefreshToken);
         }
 
         if (authoritative.Role is not (UserRole.Teacher or UserRole.Admin))

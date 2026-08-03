@@ -144,6 +144,79 @@ public sealed class UnifiedAuthenticationTests
     }
 
     [Fact]
+    public void StudentSessionRestore_UsesProtectedRefreshTokenAfterAccessExpiry()
+    {
+        var path = SessionPath("student-refresh-restore");
+        try
+        {
+            var userId = Guid.NewGuid();
+            var sessionId = Guid.NewGuid();
+            var expiredAt = DateTimeOffset.UtcNow.AddMinutes(-5);
+            var account = StudentAccount(userId, sessionId) with
+            {
+                ExpiresAtUtc = expiredAt
+            };
+            var state = new AppAuthSessionState(path);
+            state.SetAuthenticated(
+                account,
+                Jwt(userId, sessionId, expiredAt),
+                AuthSessionAuthority.Supabase,
+                "refresh-token-redacted");
+
+            Assert.True(
+                new AppAuthSessionState(path)
+                    .TryRestoreAuthenticatedSession(out var restored));
+            Assert.Equal("refresh-token-redacted", restored.RefreshToken);
+
+            state.SetAuthenticated(
+                account,
+                Jwt(userId, sessionId, expiredAt),
+                AuthSessionAuthority.Supabase);
+            Assert.False(
+                new AppAuthSessionState(path)
+                    .TryRestoreAuthenticatedSession(out _));
+        }
+        finally
+        {
+            DeleteSessionDirectory(path);
+        }
+    }
+
+    [Fact]
+    public void StudentRefreshRotation_ReplacesProtectedTokensInTheSessionCache()
+    {
+        var path = SessionPath("student-refresh-rotation");
+        try
+        {
+            var userId = Guid.NewGuid();
+            var sessionId = Guid.NewGuid();
+            var account = StudentAccount(userId, sessionId);
+            var state = new AppAuthSessionState(path);
+            state.SetAuthenticated(
+                account,
+                Jwt(userId, sessionId),
+                AuthSessionAuthority.Supabase,
+                "old-refresh-redacted");
+            var nextExpiry = DateTimeOffset.UtcNow.AddHours(2);
+            var nextAccess = Jwt(userId, sessionId, nextExpiry);
+
+            Assert.True(state.UpdateSupabaseSession(
+                nextAccess,
+                "new-refresh-redacted",
+                nextExpiry));
+            Assert.True(
+                new AppAuthSessionState(path)
+                    .TryRestoreAuthenticatedSession(out var restored));
+            Assert.Equal(nextAccess, restored.AccessToken);
+            Assert.Equal("new-refresh-redacted", restored.RefreshToken);
+        }
+        finally
+        {
+            DeleteSessionDirectory(path);
+        }
+    }
+
+    [Fact]
     public void LocalServerSessionRestore_RequiresSubjectRoleOrganizationAndExpiry()
     {
         var path = SessionPath("local-restore-binding");
@@ -259,7 +332,84 @@ public sealed class UnifiedAuthenticationTests
     }
 
     [Fact]
-    public async Task TeacherProfileWithStudentCode_PreservesExistingGuardMapping()
+    public async Task ExpiredRestoredStudentSession_RefreshesAndReloadsAuthoritativeProfile()
+    {
+        var identity = Guid.NewGuid();
+        var organization = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+        var handler = new SupabaseAccountHandler(
+            identity,
+            organization,
+            "Student");
+        var options = new FixedPublicCloudRuntimeOptionsProvider(
+            new PublicCloudRuntimeOptions(
+                new Uri("https://project.supabase.test"),
+                "sb_publishable_test_key",
+                null,
+                "Test",
+                organization));
+        var cloud = new SupabasePublicCloudClient(
+            new HttpClient(handler),
+            optionsProvider: options);
+        var expiredAt = DateTimeOffset.UtcNow.AddMinutes(-5);
+
+        Assert.True(cloud.TryRestoreSession(
+            Jwt(identity, sessionId, expiredAt),
+            "stored-refresh-redacted",
+            identity.ToString("D"),
+            expiredAt));
+
+        var restored = await cloud.RestoreAuthenticatedAccountAsync(
+            "device-1",
+            default);
+
+        Assert.Equal(identity, restored.Account.UserId);
+        Assert.Equal(UserRole.Student, restored.Account.Role);
+        Assert.Equal("refresh-token-redacted", restored.RefreshToken);
+        Assert.Contains(
+            handler.RequestUris,
+            uri => uri.AbsolutePath == "/auth/v1/token"
+                && uri.Query.Contains("grant_type=refresh_token", StringComparison.Ordinal));
+        Assert.Contains(
+            handler.RequestUris,
+            uri => uri.AbsolutePath == "/rest/v1/profiles");
+    }
+
+    [Fact]
+    public async Task StudentLogout_RevokesSupabaseSessionBeforeClearingMemory()
+    {
+        var identity = Guid.NewGuid();
+        var organization = Guid.NewGuid();
+        var handler = new SupabaseAccountHandler(
+            identity,
+            organization,
+            "Student");
+        var options = new FixedPublicCloudRuntimeOptionsProvider(
+            new PublicCloudRuntimeOptions(
+                new Uri("https://project.supabase.test"),
+                "sb_publishable_test_key",
+                null,
+                "Test",
+                organization));
+        var cloud = new SupabasePublicCloudClient(
+            new HttpClient(handler),
+            optionsProvider: options);
+        await cloud.AuthenticateAccountAsync(
+            "HS001",
+            "correct-password",
+            "device-1",
+            default);
+
+        await cloud.LogoutAsync();
+
+        Assert.False(cloud.Authenticated);
+        Assert.Contains(
+            handler.RequestUris,
+            uri => uri.AbsolutePath == "/auth/v1/logout");
+    }
+
+    [Fact]
+    public async Task TeacherProfileWithStudentCode_FailsClosedWithoutRoleOverride()
     {
         var identity = Guid.NewGuid();
         var organization = Guid.NewGuid();
@@ -276,16 +426,16 @@ public sealed class UnifiedAuthenticationTests
             organization,
             AppContext.BaseDirectory);
 
-        var result = await service.LoginAsync(
-            "teacher@example.test",
-            "correct-password",
-            "device-1",
-            "teacher-pc",
-            "1.3.7",
-            default);
+        var error = await Assert.ThrowsAsync<PublicCloudApiException>(() =>
+            service.LoginAsync(
+                "teacher@example.test",
+                "correct-password",
+                "device-1",
+                "teacher-pc",
+                "1.3.7",
+                default));
 
-        Assert.Equal(UserRole.Student, result.Account.Role);
-        Assert.Equal(AuthSessionAuthority.Supabase, result.Authority);
+        Assert.Equal(ErrorCodes.AuthenticatedRoleInvalid, error.Code);
         Assert.Equal(0, backendHandler.RequestCount);
         Assert.Equal(0, runtime.StartCount);
     }
@@ -706,6 +856,9 @@ public sealed class UnifiedAuthenticationTests
                     }
                 });
             }
+
+            if (request.RequestUri.AbsolutePath == "/auth/v1/logout")
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NoContent));
 
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
         }

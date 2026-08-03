@@ -1,5 +1,11 @@
-const jsonHeaders = { "content-type": "application/json; charset=utf-8" };
+const corsHeaders = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-headers": "authorization, apikey, content-type, x-client-info",
+  "access-control-allow-methods": "POST, OPTIONS",
+};
+const jsonHeaders = { ...corsHeaders, "content-type": "application/json; charset=utf-8" };
 const maxBytes = 10 * 1024 * 1024;
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function detectMagic(name: string, bytes: Uint8Array): string | null {
   const extension = name.toLowerCase().split(".").pop();
@@ -16,7 +22,8 @@ function hex(bytes: Uint8Array): string {
   return [...bytes].map((part) => part.toString(16).padStart(2, "0")).join("");
 }
 
-Deno.serve(async (request) => {
+export async function handler(request: Request): Promise<Response> {
+  if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
   if (request.method !== "POST") return new Response(JSON.stringify({ error: "METHOD_NOT_ALLOWED" }), { status: 405, headers: jsonHeaders });
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const publishableKey = Deno.env.get("SUPABASE_ANON_KEY");
@@ -28,7 +35,10 @@ Deno.serve(async (request) => {
   let body: { submissionId?: string; idempotencyKey?: string };
   try { body = await request.json(); }
   catch { return new Response(JSON.stringify({ error: "INVALID_JSON" }), { status: 400, headers: jsonHeaders }); }
-  if (!body.submissionId || !body.idempotencyKey) return new Response(JSON.stringify({ error: "INVALID_REQUEST" }), { status: 400, headers: jsonHeaders });
+  if (!body.submissionId
+    || !uuidPattern.test(body.submissionId)
+    || !body.idempotencyKey?.trim()
+    || body.idempotencyKey.length > 200) return new Response(JSON.stringify({ error: "INVALID_REQUEST" }), { status: 400, headers: jsonHeaders });
 
   const selectUrl = `${supabaseUrl}/rest/v1/submission_files?submission_id=eq.${encodeURIComponent(body.submissionId)}&select=id,name,size_bytes,sha256,cloud_object_path,archive_signature_verified`;
   const metadataResponse = await fetch(selectUrl, { headers: { authorization, apikey: publishableKey } });
@@ -79,4 +89,6 @@ Deno.serve(async (request) => {
   if (!finalizeResponse.ok) return new Response(JSON.stringify({ error: "SUBMISSION_FINALIZE_REJECTED" }), { status: 409, headers: jsonHeaders });
   const receiptCode = await finalizeResponse.json();
   return new Response(JSON.stringify({ receiptCode }), { status: 200, headers: jsonHeaders });
-});
+}
+
+if (import.meta.main) Deno.serve(handler);

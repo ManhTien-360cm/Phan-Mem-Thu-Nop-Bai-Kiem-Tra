@@ -1,6 +1,12 @@
 import { canonicalDeviceCommand, hmacHex } from "../_shared/device-command-signature.ts";
 
-const jsonHeaders = { "content-type": "application/json; charset=utf-8" };
+const corsHeaders = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-headers": "authorization, apikey, content-type, x-client-info",
+  "access-control-allow-methods": "POST, OPTIONS",
+};
+const jsonHeaders = { ...corsHeaders, "content-type": "application/json; charset=utf-8" };
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 type CommandRequest = {
   sessionId: string;
@@ -10,7 +16,10 @@ type CommandRequest = {
   ttlSeconds?: number;
 };
 
-Deno.serve(async (request) => {
+export async function handler(request: Request): Promise<Response> {
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: corsHeaders });
+  }
   if (request.method !== "POST") {
     return new Response(JSON.stringify({ error: "METHOD_NOT_ALLOWED" }), { status: 405, headers: jsonHeaders });
   }
@@ -27,6 +36,18 @@ Deno.serve(async (request) => {
     return new Response(JSON.stringify({ error: "AUTHENTICATION_REQUIRED" }), { status: 401, headers: jsonHeaders });
   }
 
+  let body: CommandRequest;
+  try { body = await request.json(); }
+  catch { return new Response(JSON.stringify({ error: "INVALID_JSON" }), { status: 400, headers: jsonHeaders }); }
+  if (!body.sessionId
+    || !uuidPattern.test(body.sessionId)
+    || !body.deviceId?.trim()
+    || body.deviceId.length > 200
+    || !body.commandType?.trim()
+    || body.commandType.length > 100) {
+    return new Response(JSON.stringify({ error: "INVALID_REQUEST" }), { status: 400, headers: jsonHeaders });
+  }
+
   const userResponse = await fetch(`${supabaseUrl}/auth/v1/user`, {
     headers: { authorization, apikey: publishableKey },
   });
@@ -36,12 +57,6 @@ Deno.serve(async (request) => {
   const user = await userResponse.json() as { id?: string };
   if (!user.id) return new Response(JSON.stringify({ error: "INVALID_USER_SESSION" }), { status: 401, headers: jsonHeaders });
 
-  let body: CommandRequest;
-  try { body = await request.json(); }
-  catch { return new Response(JSON.stringify({ error: "INVALID_JSON" }), { status: 400, headers: jsonHeaders }); }
-  if (!body.sessionId || !body.deviceId || !body.commandType) {
-    return new Response(JSON.stringify({ error: "INVALID_REQUEST" }), { status: 400, headers: jsonHeaders });
-  }
   const payload = body.payload ?? {};
   const ttlSeconds = Math.max(5, Math.min(900, Math.trunc(body.ttlSeconds ?? 60)));
   const commandId = crypto.randomUUID();
@@ -73,8 +88,9 @@ Deno.serve(async (request) => {
     }),
   });
   if (!rpcResponse.ok) {
-    const detail = await rpcResponse.text();
-    return new Response(JSON.stringify({ error: "COMMAND_REJECTED", detail }), { status: 403, headers: jsonHeaders });
+    return new Response(JSON.stringify({ error: "COMMAND_REJECTED" }), { status: 403, headers: jsonHeaders });
   }
   return new Response(JSON.stringify({ commandId, createdAt, expiresAt }), { status: 201, headers: jsonHeaders });
-});
+}
+
+if (import.meta.main) Deno.serve(handler);

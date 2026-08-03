@@ -15,7 +15,8 @@ public enum AuthSessionAuthority
 public sealed record RestoredAuthSession(
     CurrentAccountDto Account,
     string AccessToken,
-    AuthSessionAuthority Authority);
+    AuthSessionAuthority Authority,
+    string? RefreshToken);
 
 public sealed class AppAuthSessionState : ObservableObject
 {
@@ -102,14 +103,17 @@ public sealed class AppAuthSessionState : ObservableObject
             var stored = JsonSerializer.Deserialize<StoredAuthSession>(bytes, Json);
             if (stored?.Account is null
                 || string.IsNullOrWhiteSpace(stored.AccessToken)
-                || stored.Account.ExpiresAtUtc <= DateTimeOffset.UtcNow
                 || !ValidAuthorityBinding(stored))
             {
                 Clear();
                 return false;
             }
 
-            session = new(stored.Account, stored.AccessToken, stored.Authority);
+            session = new(
+                stored.Account,
+                stored.AccessToken,
+                stored.Authority,
+                stored.RefreshToken);
             return true;
         }
         catch (Exception ex)
@@ -123,7 +127,8 @@ public sealed class AppAuthSessionState : ObservableObject
     public void SetAuthenticated(
         CurrentAccountDto account,
         string accessToken,
-        AuthSessionAuthority? authority = null)
+        AuthSessionAuthority? authority = null,
+        string? refreshToken = null)
     {
         if (account.Role is not (UserRole.Admin or UserRole.Teacher or UserRole.Student))
             throw new InvalidOperationException(ErrorCodes.AuthenticatedRoleInvalid);
@@ -137,10 +142,35 @@ public sealed class AppAuthSessionState : ObservableObject
         if (effectiveAuthority == AuthSessionAuthority.LocalServer
             && account.Role == UserRole.Student)
             throw new InvalidOperationException("Student Local Server sessions must not replace the authoritative Supabase login.");
+        if (effectiveAuthority == AuthSessionAuthority.LocalServer)
+            refreshToken = null;
 
         CurrentAccount = account;
         AccountAccessToken = accessToken;
-        Save(account, accessToken, effectiveAuthority);
+        Save(account, accessToken, effectiveAuthority, refreshToken);
+    }
+
+    public bool UpdateSupabaseSession(
+        string accessToken,
+        string? refreshToken,
+        DateTimeOffset expiresAtUtc)
+    {
+        if (CurrentAccount is not { Role: UserRole.Student } account)
+            return false;
+
+        var updated = account with { ExpiresAtUtc = expiresAtUtc };
+        var stored = new StoredAuthSession(
+            accessToken,
+            updated,
+            AuthSessionAuthority.Supabase,
+            refreshToken);
+        if (!ValidAuthorityBinding(stored))
+            return false;
+
+        CurrentAccount = updated;
+        AccountAccessToken = accessToken;
+        Save(updated, accessToken, AuthSessionAuthority.Supabase, refreshToken);
+        return true;
     }
 
     public void SetTransientCredentials(string account, string password)
@@ -224,13 +254,18 @@ public sealed class AppAuthSessionState : ObservableObject
     private void Save(
         CurrentAccountDto account,
         string accessToken,
-        AuthSessionAuthority authority)
+        AuthSessionAuthority authority,
+        string? refreshToken)
     {
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(storePath)!);
             var bytes = JsonSerializer.SerializeToUtf8Bytes(
-                new StoredAuthSession(accessToken, account, authority),
+                new StoredAuthSession(
+                    accessToken,
+                    account,
+                    authority,
+                    refreshToken),
                 Json);
             var protectedBytes = ProtectedData.Protect(bytes, null, DataProtectionScope.CurrentUser);
             File.WriteAllBytes(storePath, protectedBytes);
@@ -244,7 +279,8 @@ public sealed class AppAuthSessionState : ObservableObject
     private static bool ValidAuthorityBinding(StoredAuthSession stored)
     {
         if (stored.Authority == AuthSessionAuthority.LocalServer)
-            return stored.Account!.Role is UserRole.Admin or UserRole.Teacher
+            return stored.Account!.ExpiresAtUtc > DateTimeOffset.UtcNow
+                && stored.Account.Role is UserRole.Admin or UserRole.Teacher
                 && ValidLocalServerTokenBinding(
                     stored.AccessToken,
                     stored.Account);
@@ -279,8 +315,10 @@ public sealed class AppAuthSessionState : ObservableObject
                     subject,
                     stored.Account.ProviderUserId,
                     StringComparison.OrdinalIgnoreCase)
-                && expiresAt > DateTimeOffset.UtcNow
-                && sessionMatches;
+                && sessionMatches
+                && ((expiresAt > DateTimeOffset.UtcNow
+                        && stored.Account.ExpiresAtUtc > DateTimeOffset.UtcNow)
+                    || !string.IsNullOrWhiteSpace(stored.RefreshToken));
         }
         catch (Exception ex) when (ex is FormatException or JsonException or ArgumentOutOfRangeException)
         {
@@ -331,5 +369,6 @@ public sealed class AppAuthSessionState : ObservableObject
     private sealed record StoredAuthSession(
         string AccessToken,
         CurrentAccountDto? Account = null,
-        AuthSessionAuthority Authority = AuthSessionAuthority.LocalServer);
+        AuthSessionAuthority Authority = AuthSessionAuthority.LocalServer,
+        string? RefreshToken = null);
 }

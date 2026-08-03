@@ -116,7 +116,8 @@ public sealed class ChangePasswordViewModel : ObservableObject
                 authState.SetAuthenticated(
                     changed.Account,
                     changed.AccessToken,
-                    AuthSessionAuthority.Supabase);
+                    AuthSessionAuthority.Supabase,
+                    changed.RefreshToken);
                 resultMessage = "Đổi mật khẩu thành công. Tài khoản đã sẵn sàng sử dụng.";
             }
             else

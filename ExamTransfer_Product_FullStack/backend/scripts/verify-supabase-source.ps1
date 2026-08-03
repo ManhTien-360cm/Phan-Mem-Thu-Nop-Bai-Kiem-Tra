@@ -27,12 +27,26 @@ $adapter = Get-Content -LiteralPath (
     Join-Path $BackendRoot "src\ExamTransfer.Infrastructure\Cloud\SupabaseCloudAdapter.cs") -Raw
 $verifyFunction = Get-Content -LiteralPath (Join-Path $BackendRoot "supabase\functions\verify-public-submission-archive\index.ts") -Raw
 $downloadFunction = Get-Content -LiteralPath (Join-Path $BackendRoot "supabase\functions\get-public-exam-file-url\index.ts") -Raw
+$commandFunction = Get-Content -LiteralPath (Join-Path $BackendRoot "supabase\functions\issue-public-device-command\index.ts") -Raw
 if ($verifyFunction -match 'rest/v1/submission_files\?id=.*method:\s*"PATCH"') {
     throw "Archive verifier must call the service-only RPC instead of PATCHing submission_files."
 }
 foreach ($requiredText in @('verify_public_submission_archive','get_public_exam_file_download','CloudSchemaCompatibility.RequiredVersion')) {
     $allSource = $adapter + $verifyFunction + $downloadFunction + (Get-Content -LiteralPath (Join-Path $BackendRoot "supabase\migrations\20260722161450_public_cloud_completion_v2.sql") -Raw)
     if ($allSource -notmatch [Regex]::Escape($requiredText)) { throw "Missing PublicCloud completion capability: $requiredText" }
+}
+
+foreach ($entry in @(
+    @{ Name = 'verify-public-submission-archive'; Source = $verifyFunction },
+    @{ Name = 'get-public-exam-file-url'; Source = $downloadFunction },
+    @{ Name = 'issue-public-device-command'; Source = $commandFunction })) {
+    if ($entry.Source -notmatch 'request\.method\s*===\s*"OPTIONS"' -or
+        $entry.Source -notmatch 'access-control-allow-origin') {
+        throw "Edge Function is missing CORS preflight handling: $($entry.Name)"
+    }
+}
+if ($commandFunction -match 'COMMAND_REJECTED[\s\S]{0,120}\bdetail\b') {
+    throw 'Device command function exposes a backend rejection detail to the client.'
 }
 
 $duplicateSupabase = Join-Path (Split-Path $BackendRoot -Parent) "database\supabase"

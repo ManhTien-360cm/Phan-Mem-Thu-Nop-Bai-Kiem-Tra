@@ -1,7 +1,16 @@
-const jsonHeaders = { "content-type": "application/json; charset=utf-8" };
+const corsHeaders = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-headers": "authorization, apikey, content-type, x-client-info",
+  "access-control-allow-methods": "POST, OPTIONS",
+};
+const jsonHeaders = { ...corsHeaders, "content-type": "application/json; charset=utf-8" };
 const signedUrlLifetimeSeconds = 180;
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-Deno.serve(async (request) => {
+export async function handler(request: Request): Promise<Response> {
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: corsHeaders });
+  }
   if (request.method !== "POST") {
     return new Response(JSON.stringify({ error: "METHOD_NOT_ALLOWED" }), { status: 405, headers: jsonHeaders });
   }
@@ -20,7 +29,7 @@ Deno.serve(async (request) => {
   let body: { sessionId?: string; fileId?: string };
   try { body = await request.json(); }
   catch { return new Response(JSON.stringify({ error: "INVALID_JSON" }), { status: 400, headers: jsonHeaders }); }
-  if (!body.sessionId || !body.fileId) {
+  if (!body.sessionId || !body.fileId || !uuidPattern.test(body.sessionId) || !uuidPattern.test(body.fileId)) {
     return new Response(JSON.stringify({ error: "INVALID_REQUEST" }), { status: 400, headers: jsonHeaders });
   }
 
@@ -71,4 +80,6 @@ Deno.serve(async (request) => {
     sizeBytes: file.size_bytes,
     sha256: file.sha256,
   }), { status: 200, headers: jsonHeaders });
-});
+}
+
+if (import.meta.main) Deno.serve(handler);

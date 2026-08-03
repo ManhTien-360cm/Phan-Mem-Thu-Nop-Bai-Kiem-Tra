@@ -173,7 +173,18 @@ public sealed class PublicCloudApiException(
 
 public sealed record SupabaseAuthenticatedAccount(
     CurrentAccountDto Account,
-    string AccessToken);
+    string AccessToken,
+    string? RefreshToken);
+
+public sealed class SupabaseAuthSessionChangedEventArgs(
+    string accessToken,
+    string? refreshToken,
+    DateTimeOffset expiresAtUtc) : EventArgs
+{
+    public string AccessToken { get; } = accessToken;
+    public string? RefreshToken { get; } = refreshToken;
+    public DateTimeOffset ExpiresAtUtc { get; } = expiresAtUtc;
+}
 
 public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
 {
@@ -219,6 +230,7 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
     public string? AccessToken => accessToken;
     public DateTimeOffset ExpiresAtUtc => expiresAtUtc;
     public string? ConfigurationErrorCode => RuntimeOptions.ErrorCode;
+    public event EventHandler<SupabaseAuthSessionChangedEventArgs>? SessionChanged;
 
     public async Task LoginAsync(string account, string password, CancellationToken cancellationToken)
     {
@@ -721,7 +733,8 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
                     ?? throw new PublicCloudApiException(
                         "PUBLICCLOUD_AUTH_INVALID",
                         "Supabase authentication returned no access token.",
-                        HttpStatusCode.Unauthorized));
+                        HttpStatusCode.Unauthorized),
+                refreshToken);
         }
         catch
         {
@@ -783,27 +796,75 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
                 ?? throw new PublicCloudApiException(
                     "PUBLICCLOUD_AUTH_INVALID",
                     "Supabase password change returned no access token.",
-                    HttpStatusCode.Unauthorized));
+                    HttpStatusCode.Unauthorized),
+            refreshToken);
     }
 
     public bool TryRestoreAccessToken(
         string token,
         string expectedProviderUserId,
+        DateTimeOffset expiresAt) =>
+        TryRestoreSession(token, null, expectedProviderUserId, expiresAt);
+
+    public bool TryRestoreSession(
+        string token,
+        string? storedRefreshToken,
+        string expectedProviderUserId,
         DateTimeOffset expiresAt)
     {
         if (string.IsNullOrWhiteSpace(token)
             || string.IsNullOrWhiteSpace(expectedProviderUserId)
-            || expiresAt <= DateTimeOffset.UtcNow
             || !TryReadJwtIdentity(token, out var subject, out var jwtExpiresAt)
             || !string.Equals(subject, expectedProviderUserId, StringComparison.OrdinalIgnoreCase)
-            || jwtExpiresAt <= DateTimeOffset.UtcNow)
+            || ((expiresAt <= DateTimeOffset.UtcNow
+                    || jwtExpiresAt <= DateTimeOffset.UtcNow)
+                && string.IsNullOrWhiteSpace(storedRefreshToken)))
             return false;
 
         Logout();
         accessToken = token;
+        refreshToken = string.IsNullOrWhiteSpace(storedRefreshToken)
+            ? null
+            : storedRefreshToken;
         providerUserId = subject;
         expiresAtUtc = expiresAt < jwtExpiresAt ? expiresAt : jwtExpiresAt;
         return true;
+    }
+
+    public async Task<SupabaseAuthenticatedAccount> RestoreAuthenticatedAccountAsync(
+        string deviceId,
+        CancellationToken cancellationToken)
+    {
+        await EnsureFreshSessionAsync(cancellationToken);
+        var current = await ReadAuthoritativeAccountAsync(deviceId, cancellationToken);
+        return new(
+            current,
+            accessToken
+                ?? throw new PublicCloudApiException(
+                    "PUBLICCLOUD_AUTH_INVALID",
+                    "Supabase session restoration returned no access token.",
+                    HttpStatusCode.Unauthorized),
+            refreshToken);
+    }
+
+    public async Task LogoutAsync(CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(accessToken) || !Configured)
+        {
+            Logout();
+            return;
+        }
+
+        try
+        {
+            using var request = ProjectRequest(HttpMethod.Post, "/auth/v1/logout");
+            using var response = await SendAsync(request, cancellationToken);
+            await EnsureSuccessAsync(response, "Supabase logout", cancellationToken);
+        }
+        finally
+        {
+            Logout();
+        }
     }
 
     public void Logout()
@@ -846,6 +907,12 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
             root.TryGetProperty("expires_in", out var expiry)
                 ? expiry.GetInt32()
                 : 3600);
+        SessionChanged?.Invoke(
+            this,
+            new SupabaseAuthSessionChangedEventArgs(
+                accessToken,
+                refreshToken,
+                expiresAtUtc));
     }
 
     private async Task<CurrentAccountDto> ReadAuthoritativeAccountAsync(
@@ -921,6 +988,8 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
         }
         else
         {
+            if (!string.IsNullOrWhiteSpace(studentCode))
+                throw InvalidAuthenticatedRole("Non-student profile contains a student code.");
             if (string.IsNullOrWhiteSpace(authenticatedEmail))
                 throw InvalidAuthenticatedRole("Supabase authenticated email is missing.");
             accountIdentifier = authenticatedEmail.Trim();
