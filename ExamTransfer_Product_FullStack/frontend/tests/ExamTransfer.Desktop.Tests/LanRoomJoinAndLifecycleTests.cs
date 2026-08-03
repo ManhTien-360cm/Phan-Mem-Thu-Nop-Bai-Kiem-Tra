@@ -484,6 +484,9 @@ public sealed class LanRoomJoinAndLifecycleTests
             publishableKey,
             startInfo.Environment["Cloud__PublishableKey"]);
         Assert.Equal(
+            publishableKey,
+            startInfo.Environment["Cloud__SupabasePublishableKey"]);
+        Assert.Equal(
             organizationId.ToString(),
             startInfo.Environment["Cloud__OrganizationId"]);
         Assert.Equal(
@@ -513,6 +516,7 @@ public sealed class LanRoomJoinAndLifecycleTests
         Assert.False(startInfo.Environment.ContainsKey("Cloud__Enabled"));
         Assert.False(startInfo.Environment.ContainsKey("Cloud__SupabaseUrl"));
         Assert.False(startInfo.Environment.ContainsKey("Cloud__PublishableKey"));
+        Assert.False(startInfo.Environment.ContainsKey("Cloud__SupabasePublishableKey"));
         Assert.False(startInfo.Environment.ContainsKey("Cloud__OrganizationId"));
     }
 

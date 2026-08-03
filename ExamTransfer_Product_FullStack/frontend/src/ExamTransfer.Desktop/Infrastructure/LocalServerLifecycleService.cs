@@ -377,6 +377,7 @@ public sealed class LocalServerRuntime(int port) : ILocalServerRuntime
             .ToString()
             .TrimEnd('/');
         startInfo.Environment["Cloud__PublishableKey"] = publishableKey;
+        startInfo.Environment["Cloud__SupabasePublishableKey"] = publishableKey;
         startInfo.Environment["Cloud__OrganizationId"] = organization.ToString();
         startInfo.Environment["Cloud__AccessMode"] = CloudAccessModes.UserSession;
     }

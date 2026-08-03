@@ -286,6 +286,13 @@ public interface ICloudAdapter
         Guid requestId,
         CancellationToken cancellationToken) =>
         throw new NotSupportedException("PublicCloud teacher mutations are not supported by this adapter.");
+    Task<CloudSubmissionLateOverrideResult> SetPublicSubmissionLateOverrideAsync(
+        Guid submissionId,
+        bool? lateOverride,
+        string reason,
+        Guid requestId,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("PublicCloud late overrides are not supported by this adapter.");
     Task<MessageDto> SendPublicTeacherMessageAsync(
         Guid sessionId,
         Guid? participantId,
@@ -411,6 +418,15 @@ public sealed record CloudSubmissionMutationResult(
     Guid ParticipantId,
     SubmissionStatus Status,
     string? TeacherRejectReason,
+    long CloudVersion,
+    DateTimeOffset UpdatedAtUtc);
+
+public sealed record CloudSubmissionLateOverrideResult(
+    Guid SubmissionId,
+    bool ComputedIsLate,
+    bool? LateOverride,
+    bool EffectiveIsLate,
+    SubmissionStatus Status,
     long CloudVersion,
     DateTimeOffset UpdatedAtUtc);
 
@@ -564,6 +580,12 @@ public interface ISubmissionService
     Task<SubmissionSummaryDto> GetAsync(Guid submissionId, CancellationToken cancellationToken);
     Task RejectAsync(Guid submissionId, RejectSubmissionRequest request, CancellationToken cancellationToken);
     Task AllowResubmitAsync(Guid participantId, AllowResubmitRequest request, CancellationToken cancellationToken);
+    Task<SubmissionSummaryDto> SetLateOverrideAsync(
+        Guid submissionId,
+        SetSubmissionLateOverrideRequest request,
+        Guid actorId,
+        string? actorOrganizationId,
+        CancellationToken cancellationToken);
 }
 
 public sealed record SubmissionDownloadContent(

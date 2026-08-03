@@ -16,7 +16,7 @@ namespace ExamTransfer.Infrastructure.Tests;
 public sealed class UnifiedGradingTests
 {
     [Fact]
-    public async Task SqliteUpgrade_BackfillsExistingFinalizedAttemptAndAdvancesSchema12()
+    public async Task SqliteUpgrade_BackfillsExistingFinalizedAttemptAndAdvancesSchema13()
     {
         await using var fixture = await Fixture.CreateAsync();
         await fixture.Db.Database.ExecuteSqlRawAsync(
@@ -40,7 +40,7 @@ public sealed class UnifiedGradingTests
         Assert.Equal(GradingStatus.Graded, upgraded.GradingStatus);
         Assert.Equal(upgraded.FinalizedAtUtc, upgraded.GradedAtUtc);
         Assert.Equal(
-            "\"12\"",
+            "\"13\"",
             (await fixture.Db.AppSettingsSet.SingleAsync(x => x.Key == "schema.version")).ValueJson);
     }
 

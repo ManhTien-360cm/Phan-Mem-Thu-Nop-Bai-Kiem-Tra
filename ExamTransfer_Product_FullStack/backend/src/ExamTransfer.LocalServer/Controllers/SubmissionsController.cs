@@ -59,6 +59,17 @@ public sealed class SubmissionsController(
     [HttpPost("submissions/{id:guid}/reject")][Authorize(Policy = "TeacherOrAdmin")]
     public async Task<ActionResult<ApiResponse<object>>> Reject(Guid id, RejectSubmissionRequest request, CancellationToken ct) { await service.RejectAsync(id, request, ct); return EmptyData(); }
 
+    [HttpPut("submissions/{id:guid}/late-override")][Authorize(Policy = "TeacherOrAdmin")]
+    public async Task<ActionResult<ApiResponse<SubmissionSummaryDto>>> SetLateOverride(
+        Guid id,
+        SetSubmissionLateOverrideRequest request,
+        CancellationToken ct) => Data(await service.SetLateOverrideAsync(
+            id,
+            request,
+            RequiredGuidClaim(ClaimTypes.NameIdentifier),
+            User.FindFirst("organization_id")?.Value,
+            ct));
+
     [HttpPost("participants/{participantId:guid}/allow-resubmit")][Authorize(Policy = "TeacherOrAdmin")]
     public async Task<ActionResult<ApiResponse<object>>> Resubmit(Guid participantId, AllowResubmitRequest request, CancellationToken ct) { await service.AllowResubmitAsync(participantId, request, ct); return EmptyData(); }
 

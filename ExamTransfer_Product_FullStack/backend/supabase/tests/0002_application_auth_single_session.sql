@@ -14,7 +14,7 @@ select ok((select relrowsecurity from pg_class where oid = 'public.user_login_se
 select has_function('public', 'claim_examtransfer_login_session', array['uuid','text','text','inet','text','text','integer'], 'claim login RPC exists');
 select has_function('public', 'heartbeat_examtransfer_login_session', array['uuid','uuid','text','integer'], 'heartbeat login RPC exists');
 select has_function('public', 'release_examtransfer_login_session', array['uuid','uuid','text','text'], 'release login RPC exists');
-select is((select schema_version from public.examtransfer_cloud_meta where id = 1), 26, 'schema version is 26');
+select is((select schema_version from public.examtransfer_cloud_meta where id = 1), 27, 'schema version is 27');
 
 select * from finish();
 rollback;

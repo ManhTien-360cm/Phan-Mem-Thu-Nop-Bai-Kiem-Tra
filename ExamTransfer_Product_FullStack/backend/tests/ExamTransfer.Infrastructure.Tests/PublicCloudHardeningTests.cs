@@ -152,7 +152,7 @@ public sealed class FinalCloudSourceCompatibilityTests
                 $"/quiz-sources/{sourceId}/source.bin",
                 firstPath,
                 StringComparison.Ordinal);
-            Assert.Equal(25, CloudSchemaCompatibility.RequiredVersion);
+            Assert.Equal(27, CloudSchemaCompatibility.RequiredVersion);
         }
         finally
         {
@@ -164,7 +164,7 @@ public sealed class FinalCloudSourceCompatibilityTests
     [Fact]
     public void PublicCloudCapability_RequiresSchema23AndCriticalRpcs()
     {
-        Assert.Equal(25, CloudSchemaCompatibility.RequiredVersion);
+        Assert.Equal(27, CloudSchemaCompatibility.RequiredVersion);
         Assert.Contains("save_public_quiz_grade", CloudSchemaCompatibility.CriticalRpcs);
         Assert.Contains("return_public_quiz_grade", CloudSchemaCompatibility.CriticalRpcs);
         Assert.Contains("reopen_public_quiz_grade", CloudSchemaCompatibility.CriticalRpcs);
@@ -700,6 +700,49 @@ public sealed class PublicCloudTeacherMutationRoutingTests
     }
 
     [Fact]
+    public async Task PublicCloud_late_override_uses_canonical_rpc_and_persists_effective_projection()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var participant = await PublicCloudTestHarness.SeedSessionAsync(
+            database.Context,
+            SessionAccessMode.PublicCloud);
+        var actor = new User
+        {
+            Id = Guid.NewGuid(), Username = "teacher", DisplayName = "Teacher",
+            Role = UserRole.Teacher, IsActive = true, OrganizationId = "org-a"
+        };
+        participant.Session.Exam.CreatedBy = actor.Id;
+        var submission = new Submission
+        {
+            Participant = participant, SessionId = participant.SessionId,
+            AttemptNumber = 1, IdempotencyKey = "late-override-test",
+            Status = SubmissionStatus.Submitted, IsOfficial = true,
+            ClientSubmittedAtUtc = DateTimeOffset.UtcNow,
+            ServerReceivedAtUtc = DateTimeOffset.UtcNow,
+            DeadlineUtc = DateTimeOffset.UtcNow.AddHours(1),
+            SourceMode = "PublicCloud"
+        };
+        database.Context.AddRange(actor, submission);
+        await database.Context.SaveChangesAsync();
+        var cloud = new RecordingCloudAdapter();
+        var service = CreateSubmissionService(database.Context, cloud);
+
+        var result = await service.SetLateOverrideAsync(
+            submission.Id,
+            new SetSubmissionLateOverrideRequest(true, "Manual late review", Guid.NewGuid()),
+            actor.Id,
+            actor.OrganizationId,
+            CancellationToken.None);
+
+        Assert.Equal(1, cloud.LateOverrideCalls);
+        Assert.True(result.LateOverride);
+        Assert.True(result.IsLate);
+        Assert.Equal(SubmissionStatus.LateSubmitted, result.Status);
+        Assert.Contains(await database.Context.AuditLogsSet.ToListAsync(),
+            row => row.Action == "SubmissionLateOverrideChanged");
+    }
+
+    [Fact]
     public async Task PublicCloud_submission_rpc_failures_do_not_fallback_or_write_local_state()
     {
         await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
@@ -843,7 +886,8 @@ public sealed class PublicCloudTeacherMutationRoutingTests
             outbox,
             realtime,
             options,
-            dispatcher);
+            dispatcher,
+            cloud);
     }
 
     private sealed class TestRealtimePublisher : IRealtimePublisher
@@ -901,6 +945,52 @@ public sealed class PublicCloudTeacherMutationRoutingTests
 
 public sealed class PublicCloudPullProjectionTests
 {
+    [Fact]
+    public async Task Pull_maps_verified_archive_to_completed_gradeable_file_and_late_state()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var participant = await PublicCloudTestHarness.SeedSessionAsync(
+            database.Context, SessionAccessMode.PublicCloud);
+        var submissionId = Guid.NewGuid();
+        var fileId = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow;
+        var cloud = new PullCloudAdapter(new Dictionary<string, CloudPullRecord>
+        {
+            ["submissions"] = new("submissions", submissionId.ToString(), 70, now,
+                JsonSerializer.Serialize(new
+                {
+                    id = submissionId, session_id = participant.SessionId,
+                    participant_id = participant.Id, attempt_number = 1,
+                    idempotency_key = "verified-projection", status = "LateSubmitted",
+                    client_submitted_at = now, server_received_at = now,
+                    deadline_at = now.AddMinutes(5), computed_is_late = false,
+                    late_override = true, is_late = true, is_official = true
+                })),
+            ["submission_files"] = new("submission_files", fileId.ToString(), 71, now.AddSeconds(1),
+                JsonSerializer.Serialize(new
+                {
+                    id = fileId, submission_id = submissionId, client_file_id = "archive",
+                    name = "answer.zip", stored_name = "answer.zip",
+                    mime_type = "application/zip", size_bytes = 4,
+                    sha256 = new string('a', 64), transfer_status = "Verified",
+                    archive_signature_verified = true,
+                    cloud_object_path = "org/public-submissions/user/submission/file.zip"
+                }))
+        });
+
+        await PublicCloudTestHarness.RunPullOnceAsync(database.Path, cloud);
+
+        await using var verify = database.CreateContext();
+        var projected = await verify.SubmissionsSet.Include(x => x.Files)
+            .SingleAsync(x => x.Id == submissionId);
+        var file = Assert.Single(projected.Files);
+        Assert.False(projected.ComputedIsLate);
+        Assert.True(projected.LateOverride);
+        Assert.True(projected.IsLate);
+        Assert.Equal(TransferStatus.Completed, file.TransferStatus);
+        Assert.True(file.ArchiveVerified);
+    }
+
     [Fact]
     public async Task Pull_projects_enrollment_and_approved_participant_into_business_tables()
     {
@@ -1351,6 +1441,7 @@ internal class RecordingCloudAdapter : ICloudAdapter
     public int BulkApproveCalls { get; private set; }
     public int ResubmitCalls { get; private set; }
     public int RejectSubmissionCalls { get; private set; }
+    public int LateOverrideCalls { get; private set; }
     public int ExtraTimeCalls { get; private set; }
     public int SendMessageCalls { get; private set; }
     public Guid? LastApproveRequestId { get; private set; }
@@ -1514,6 +1605,24 @@ internal class RecordingCloudAdapter : ICloudAdapter
                 502);
         return Task.FromResult(new CloudSubmissionMutationResult(
             submissionId, Guid.Empty, Guid.Empty, SubmissionStatus.Rejected, reason, 44, DateTimeOffset.UtcNow));
+    }
+    public Task<CloudSubmissionLateOverrideResult> SetPublicSubmissionLateOverrideAsync(
+        Guid submissionId,
+        bool? lateOverride,
+        string reason,
+        Guid requestId,
+        CancellationToken cancellationToken)
+    {
+        LateOverrideCalls++;
+        var effective = lateOverride ?? false;
+        return Task.FromResult(new CloudSubmissionLateOverrideResult(
+            submissionId,
+            false,
+            lateOverride,
+            effective,
+            effective ? SubmissionStatus.LateSubmitted : SubmissionStatus.Submitted,
+            45,
+            DateTimeOffset.UtcNow));
     }
     public Task<MessageDto> SendPublicTeacherMessageAsync(
         Guid sessionId,

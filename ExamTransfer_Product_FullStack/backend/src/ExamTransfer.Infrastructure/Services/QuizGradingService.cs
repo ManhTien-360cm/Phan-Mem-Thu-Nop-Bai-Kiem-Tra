@@ -48,6 +48,11 @@ public sealed class QuizGradingService(
         var items = new List<GradingWorkItemDto>();
         foreach (var submission in files)
         {
+            if (submission.Files.Count != StudentSubmissionPolicy.MaxFileCount
+                || submission.Files.Single().TransferStatus != TransferStatus.Completed
+                || (submission.Session.AccessMode == SessionAccessMode.PublicCloud
+                    && !submission.Files.Single().ArchiveVerified))
+                continue;
             if (!await CanAccessExamAsync(submission.Session.Exam, actor, cancellationToken))
                 continue;
             fileGradeBySubmission.TryGetValue(submission.Id, out var grade);

@@ -113,6 +113,7 @@ public sealed class PublicCloudSubmissionDownloadService(
         if (file.Id != fileId
             || file.SubmissionId != submissionId
             || file.TransferStatus != TransferStatus.Completed
+            || !file.ArchiveVerified
             || !string.Equals(file.SourceMode, "PublicCloud", StringComparison.OrdinalIgnoreCase)
             || file.SizeBytes <= 0
             || !IsSha256(file.Sha256))

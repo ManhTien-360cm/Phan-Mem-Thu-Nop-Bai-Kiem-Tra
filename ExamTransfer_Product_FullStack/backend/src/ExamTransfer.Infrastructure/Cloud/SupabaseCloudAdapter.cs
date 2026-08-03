@@ -371,6 +371,36 @@ public sealed class SupabaseCloudAdapter(
             result.GetProperty("updatedAt").GetDateTimeOffset());
     }
 
+    public async Task<CloudSubmissionLateOverrideResult> SetPublicSubmissionLateOverrideAsync(
+        Guid submissionId,
+        bool? lateOverride,
+        string reason,
+        Guid requestId,
+        CancellationToken cancellationToken)
+    {
+        var result = await InvokeTeacherRpcAsync(
+            "set_public_submission_late_override",
+            new
+            {
+                p_submission_id = submissionId,
+                p_late_override = lateOverride,
+                p_reason = reason,
+                p_request_id = requestId
+            },
+            cancellationToken);
+        return new(
+            result.GetProperty("submissionId").GetGuid(),
+            result.GetProperty("computedIsLate").GetBoolean(),
+            result.TryGetProperty("lateOverride", out var overrideValue)
+                && overrideValue.ValueKind != JsonValueKind.Null
+                    ? overrideValue.GetBoolean()
+                    : null,
+            result.GetProperty("effectiveIsLate").GetBoolean(),
+            Enum.Parse<SubmissionStatus>(result.GetProperty("status").GetString()!, true),
+            result.GetProperty("cloudVersion").GetInt64(),
+            result.GetProperty("updatedAt").GetDateTimeOffset());
+    }
+
     public async Task<MessageDto> SendPublicTeacherMessageAsync(
         Guid sessionId,
         Guid? participantId,

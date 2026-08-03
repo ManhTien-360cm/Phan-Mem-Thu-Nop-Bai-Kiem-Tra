@@ -7,7 +7,7 @@ namespace ExamTransfer.Infrastructure.Persistence;
 
 public static class DbInitializer
 {
-    public const string SchemaVersion = "12";
+    public const string SchemaVersion = "13";
 
     public static async Task InitializeAsync(AppDbContext db, IStoragePaths paths, CancellationToken cancellationToken = default)
     {
@@ -132,6 +132,14 @@ public static class DbInitializer
             await EnsureColumnAsync(db, table, "CloudUpdatedAtUtc", "TEXT NULL", cancellationToken);
             await EnsureColumnAsync(db, table, "CloudSyncState", "TEXT NOT NULL DEFAULT 'LocalOnly'", cancellationToken);
         }
+        await EnsureColumnAsync(db, "submissions", "ComputedIsLate", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureColumnAsync(db, "submissions", "LateOverride", "INTEGER NULL", cancellationToken);
+        await EnsureColumnAsync(db, "submission_files", "ArchiveVerified", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
+        await db.Database.ExecuteSqlRawAsync("""
+            UPDATE "submissions"
+            SET "ComputedIsLate" = "IsLate"
+            WHERE "ComputedIsLate" = 0 AND "IsLate" = 1;
+            """, cancellationToken);
         await EnsurePublicCloudProjectionTablesAsync(db, cancellationToken);
         await EnsurePublicCloudReplicaTablesAsync(db, cancellationToken);
     }

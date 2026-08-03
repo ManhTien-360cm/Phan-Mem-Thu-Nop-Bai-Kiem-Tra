@@ -12,7 +12,7 @@ public enum CloudEntityAuthority
 
 public static class CloudSchemaCompatibility
 {
-    public const int RequiredVersion = 25;
+    public const int RequiredVersion = 27;
     public static readonly IReadOnlySet<string> CriticalRpcs = new HashSet<string>(StringComparer.Ordinal)
     {
         "join_public_session",
@@ -40,6 +40,7 @@ public static class CloudSchemaCompatibility
         "add_public_participant_extra_time",
         "allow_public_resubmission",
         "reject_public_submission",
+        "set_public_submission_late_override",
         "approve_public_enrollment_request",
         "reject_public_enrollment_request",
         "get_public_student_timeline",

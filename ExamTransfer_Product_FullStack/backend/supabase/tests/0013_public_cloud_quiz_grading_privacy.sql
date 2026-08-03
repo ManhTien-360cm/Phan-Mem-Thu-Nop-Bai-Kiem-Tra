@@ -1,8 +1,8 @@
 begin;
 select plan(30);
 
-select is((select schema_version from public.examtransfer_cloud_meta where id=1),26,
-  'PublicCloud grading privacy remains available at schema version 26');
+select is((select schema_version from public.examtransfer_cloud_meta where id=1),27,
+  'PublicCloud grading privacy remains available at schema version 27');
 select has_function('public','save_public_quiz_grade',
   array['uuid','numeric','text','bigint','uuid'],'save grade RPC exists');
 select has_function('public','return_public_quiz_grade',
@@ -13,7 +13,7 @@ select ok(position(
   '''save_public_quiz_grade'''
   in lower(pg_get_functiondef(
     'public.get_examtransfer_cloud_capabilities()'::regprocedure))) > 0,
-  'schema 26 capabilities advertise teacher grading RPCs');
+  'schema 27 capabilities advertise teacher grading RPCs');
 select ok(not has_function_privilege('anon',
   'public.save_public_quiz_grade(uuid,numeric,text,bigint,uuid)','EXECUTE'),
   'anon cannot save a quiz grade');

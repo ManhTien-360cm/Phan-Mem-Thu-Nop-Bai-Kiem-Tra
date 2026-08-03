@@ -36,7 +36,10 @@ public sealed class GradeService(
             .Include(x => x.Session)
             .Where(x => x.Session.DeliveryTypeSnapshot == ExamDeliveryType.FileSubmission
                 && x.IsOfficial
-                && (x.Status == SubmissionStatus.Submitted || x.Status == SubmissionStatus.LateSubmitted));
+                && (x.Status == SubmissionStatus.Submitted || x.Status == SubmissionStatus.LateSubmitted)
+                && x.Files.Count == StudentSubmissionPolicy.MaxFileCount
+                && x.Files.Any(f => f.TransferStatus == TransferStatus.Completed
+                    && (x.Session.AccessMode != SessionAccessMode.PublicCloud || f.ArchiveVerified)));
         if (status.HasValue)
         {
             query = status.Value switch
@@ -64,7 +67,9 @@ public sealed class GradeService(
             s.IsLate,
             s.ReceiptCode,
             s.IsOfficial,
-            s.Files.Select(f => f.ToDto([])).ToList())).ToList();
+            s.Files.Select(f => f.ToDto([])).ToList(),
+            s.ComputedIsLate,
+            s.LateOverride)).ToList();
         return new(items, page, pageSize, total);
     }
 
@@ -541,9 +546,11 @@ public sealed class GradeService(
             throw new ApiException(ErrorCodes.InvalidStateTransition, "Bài nộp OnlyLAN chưa hoàn tất.", 409);
         }
         if (submission.Session.AccessMode == SessionAccessMode.PublicCloud
-            && !string.Equals(submission.SourceMode, "PublicCloud", StringComparison.OrdinalIgnoreCase))
+            && (!string.Equals(submission.SourceMode, "PublicCloud", StringComparison.OrdinalIgnoreCase)
+                || submission.Files.Single().TransferStatus != TransferStatus.Completed
+                || !submission.Files.Single().ArchiveVerified))
         {
-            throw new ApiException(ErrorCodes.InvalidStateTransition, "Bài nộp không thuộc PublicCloud.", 409);
+            throw new ApiException(ErrorCodes.InvalidStateTransition, "Archive PublicCloud chưa được xác minh để chấm.", 409);
         }
 
         await EnsureOwnershipAsync(

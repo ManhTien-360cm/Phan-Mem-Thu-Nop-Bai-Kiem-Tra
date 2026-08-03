@@ -714,7 +714,7 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
             "get_examtransfer_cloud_capabilities",
             new { },
             cancellationToken);
-        if (capabilities.SchemaVersion < 26
+        if (capabilities.SchemaVersion < 27
             || capabilities.CriticalRpcs is null
             || !capabilities.CriticalRpcs.Contains(
                 "get_public_student_notification_events",
@@ -724,6 +724,9 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
                 StringComparer.Ordinal)
             || !capabilities.CriticalRpcs.Contains(
                 "get_student_results",
+                StringComparer.Ordinal)
+            || !capabilities.CriticalRpcs.Contains(
+                "set_public_submission_late_override",
                 StringComparer.Ordinal))
             throw new PublicCloudApiException(
                 "PUBLICCLOUD_SCHEMA_INCOMPATIBLE",

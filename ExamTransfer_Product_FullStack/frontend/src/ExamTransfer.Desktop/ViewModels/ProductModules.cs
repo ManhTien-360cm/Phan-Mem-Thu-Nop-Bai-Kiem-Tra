@@ -931,7 +931,7 @@ public sealed class SessionManagementViewModel : ProductPageBase
         IBackendClient api,
         IDialogService? archiveDialogs = null,
         Func<TimeSpan, CancellationToken, Task>? projectionDelay = null,
-        int projectionPollAttempts = 24)
+        int projectionPollAttempts = 60)
     {
         this.api = api;
         this.archiveDialogs = archiveDialogs ?? AppServices.Dialogs;
@@ -1674,8 +1674,14 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
         this.realtime.NotificationReceived += OnRealtimeNotification;
         RefreshCommand = new AsyncRelayCommand(() => LoadAsync(DisposeToken), () => !IsBusy);
         LoadCommand = new AsyncRelayCommand(LoadSubmissionsAsync, () => !IsBusy && SelectedSession is not null);
-        RejectCommand = new AsyncRelayCommand(RejectAsync, () => !IsBusy && SelectedSubmission is not null);
-        ResubmitCommand = new AsyncRelayCommand(ResubmitAsync, () => !IsBusy && SelectedSubmission is not null);
+        RejectCommand = new AsyncRelayCommand(RejectAsync, CanReject);
+        ResubmitCommand = new AsyncRelayCommand(ResubmitAsync, CanAllowResubmit);
+        UseComputedLateCommand = new AsyncRelayCommand(
+            () => SetLateOverrideAsync(null), CanSetLateOverride);
+        MarkLateCommand = new AsyncRelayCommand(
+            () => SetLateOverrideAsync(true), CanSetLateOverride);
+        MarkOnTimeCommand = new AsyncRelayCommand(
+            () => SetLateOverrideAsync(false), CanSetLateOverride);
         CopyReceiptCommand = new RelayCommand(CopyReceipt);
         SelectAllCommand = new RelayCommand(
             SelectAll,
@@ -1703,8 +1709,24 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
             RaiseCommands();
         }
     }
-    public SubmissionSelectionRow? SelectedSubmission { get => selectedSubmission; set { if (Set(ref selectedSubmission, value)) RaiseCommands(); } }
+    public SubmissionSelectionRow? SelectedSubmission
+    {
+        get => selectedSubmission;
+        set
+        {
+            if (!Set(ref selectedSubmission, value)) return;
+            Raise(nameof(ResubmitGuidance));
+            RaiseCommands();
+        }
+    }
     public string Reason { get => reason; set => Set(ref reason, value); }
+    public string ResubmitGuidance => SelectedSubmission?.Status switch
+    {
+        SubmissionStatus.Rejected => "Bài đã bị từ chối; có thể cấp quyền tạo attempt mới.",
+        SubmissionStatus.Submitted or SubmissionStatus.LateSubmitted =>
+            "Hãy từ chối attempt hiện tại trước khi cho phép học sinh nộp lại.",
+        _ => "Chỉ bài ở trạng thái Rejected mới được phép nộp lại."
+    };
     public int SelectedCount => Submissions.Count(row => row.IsSelected);
     public int DownloadableSelectedCount =>
         Submissions.Count(row => row.IsSelected && row.CanDownload);
@@ -1716,6 +1738,9 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
     public ICommand LoadCommand { get; }
     public ICommand RejectCommand { get; }
     public ICommand ResubmitCommand { get; }
+    public ICommand UseComputedLateCommand { get; }
+    public ICommand MarkLateCommand { get; }
+    public ICommand MarkOnTimeCommand { get; }
     public ICommand CopyReceiptCommand { get; }
     public ICommand SelectAllCommand { get; }
     public ICommand ClearSelectionCommand { get; }
@@ -1774,6 +1799,31 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
         await LoadSubmissionsCoreAsync(ct);
     });
 
+    private bool CanReject() =>
+        !IsBusy && SelectedSubmission?.Status is SubmissionStatus.Submitted or SubmissionStatus.LateSubmitted;
+
+    private bool CanAllowResubmit() =>
+        !IsBusy && SelectedSubmission?.Status == SubmissionStatus.Rejected;
+
+    private bool CanSetLateOverride() =>
+        !IsBusy && SelectedSubmission?.Status is SubmissionStatus.Submitted or SubmissionStatus.LateSubmitted;
+
+    private Task SetLateOverrideAsync(bool? lateOverride) => RunAsync(
+        "Đang cập nhật trạng thái nộp muộn",
+        "Trạng thái nộp muộn đã được cập nhật và ghi audit",
+        async ct =>
+        {
+            if (SelectedSubmission is null) return;
+            var mutationKey = $"late-override:{SelectedSubmission.SubmissionId:N}:{lateOverride?.ToString() ?? "computed"}";
+            var mutationId = GetMutationRequestId(mutationKey);
+            _ = ApiGuard.Require(await api.PutAsync<SetSubmissionLateOverrideRequest, SubmissionSummaryDto>(
+                $"api/v1/submissions/{SelectedSubmission.SubmissionId}/late-override",
+                new(lateOverride, Reason, mutationId),
+                ct));
+            CompleteMutationRequest(mutationKey);
+            await LoadSubmissionsCoreAsync(ct);
+        });
+
     private Task ResubmitAsync() => RunAsync("Đang cấp quyền nộp lại", "Học sinh đã được phép tạo attempt mới", async ct =>
     {
         if (SelectedSubmission is null) return;
@@ -1781,6 +1831,7 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
         var mutationId = GetMutationRequestId(mutationKey);
         _ = ApiGuard.Require(await api.PostAsync<AllowResubmitRequest, object>($"api/v1/participants/{SelectedSubmission.ParticipantId}/allow-resubmit", new(Reason, mutationId), ct));
         CompleteMutationRequest(mutationKey);
+        await LoadSubmissionsCoreAsync(ct);
     });
 
     private async Task DownloadSelectedAsync()
@@ -1907,7 +1958,7 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
 
     protected override void RaiseCommands()
     {
-        foreach (var command in new[] { RefreshCommand, LoadCommand, RejectCommand, ResubmitCommand, DownloadSelectedCommand }.OfType<AsyncRelayCommand>())
+        foreach (var command in new[] { RefreshCommand, LoadCommand, RejectCommand, ResubmitCommand, UseComputedLateCommand, MarkLateCommand, MarkOnTimeCommand, DownloadSelectedCommand }.OfType<AsyncRelayCommand>())
             command.RaiseCanExecuteChanged();
         foreach (var command in new[] { SelectAllCommand, ClearSelectionCommand }.OfType<RelayCommand>())
             command.RaiseCanExecuteChanged();

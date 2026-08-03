@@ -155,6 +155,13 @@ select is((select count(*)::integer from public.student_notification_events
   where session_id='71300000-0000-0000-0000-000000000003'),0,
   'OnlyLAN mutation attempt creates no cloud event');
 
+update public.submissions
+set status = 'Rejected'
+where id = '71500000-0000-0000-0000-000000000001';
+update public.session_participants
+set submission_status = 'Rejected'
+where id = '71400000-0000-0000-0000-000000000001';
+
 set local role authenticated;
 select set_config('request.jwt.claims','{"sub":"71000000-0000-0000-0000-000000000001","role":"authenticated"}',true);
 select public.approve_public_participant(

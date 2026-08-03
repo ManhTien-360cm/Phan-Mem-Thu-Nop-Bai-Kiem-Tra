@@ -37,6 +37,18 @@ public sealed class PublicCloudSubmissionDownloadTests
     }
 
     [Fact]
+    public async Task UnverifiedArchiveIsRejectedBeforeCloudDownload()
+    {
+        await using var fixture = await DownloadFixture.CreateAsync();
+        fixture.File.ArchiveVerified = false;
+        await fixture.Db.SaveChangesAsync();
+
+        await AssertStatusAsync(404, () => fixture.OpenAsync());
+
+        Assert.Equal(0, fixture.Cloud.DownloadCount);
+    }
+
+    [Fact]
     public async Task EndpointRequiresTeacherOrAdminAndReturnsRangeEnabledStream()
     {
         await using var fixture = await DownloadFixture.CreateAsync();
@@ -615,6 +627,7 @@ public sealed class PublicCloudSubmissionDownloadTests
                 ChunkSizeBytes = 1024,
                 TotalChunks = 1,
                 TransferStatus = TransferStatus.Completed,
+                ArchiveVerified = true,
                 SyncStatus = SyncStatus.Synced
             };
             file.CloudObjectPath =

@@ -62,6 +62,7 @@ public sealed record FinalizeSubmissionRequest(string? ClientNote);
 public sealed record FinalizeSubmissionResponse(SubmissionStatus Status, DateTimeOffset ServerReceivedAtUtc, bool IsLate, string ReceiptCode, string ReceiptSignature, IReadOnlyList<FileDescriptorDto> Files);
 public sealed record RejectSubmissionRequest(string Reason, Guid MutationRequestId);
 public sealed record AllowResubmitRequest(string Reason, Guid MutationRequestId);
+public sealed record SetSubmissionLateOverrideRequest(bool? LateOverride, string Reason, Guid MutationRequestId);
 
 public sealed record CreateExportRequest(Guid SessionId, bool IncludeFiles, bool IncludeManifest, bool IncludeReceipts, bool IncludeAudit, string Format, string NamingPattern);
 public sealed record CreateBackupRequest(bool IncludeFiles, bool Encrypt, string? PasswordHint);

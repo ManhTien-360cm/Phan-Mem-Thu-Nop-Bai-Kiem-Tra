@@ -201,10 +201,12 @@
                             <DataGridTextColumn Header="HỌ TÊN" Binding="{Binding StudentName}" Width="*" />
                             <DataGridTextColumn Header="LẦN" Binding="{Binding AttemptNumber}" Width="55" />
                             <DataGridTextColumn Header="TRẠNG THÁI" Binding="{Binding Status}" Width="110" />
-                            <DataGridCheckBoxColumn Header="MUỘN"
-                                                    Binding="{Binding IsLate, Mode=OneWay}"
-                                                    IsReadOnly="True"
-                                                    Width="55" />
+                            <DataGridTextColumn Header="THỜI HẠN"
+                                                Binding="{Binding LateDisplay}"
+                                                Width="90" />
+                            <DataGridTextColumn Header="NGUỒN"
+                                                Binding="{Binding LateSource}"
+                                                Width="115" />
                             <DataGridTextColumn Header="BIÊN NHẬN" Binding="{Binding ReceiptCode}" Width="120" />
                         </DataGrid.Columns>
                     </DataGrid>
@@ -240,6 +242,25 @@
                                     Command="{Binding ResubmitCommand}"
                                     Style="{StaticResource PrimaryButton}"
                                     MinHeight="42" />
+                            <TextBlock Text="{Binding ResubmitGuidance}"
+                                       Style="{StaticResource CaptionText}"
+                                       TextWrapping="Wrap"
+                                       Margin="0,8,0,0" />
+                            <Separator Margin="0,14" />
+                            <TextBlock Text="Trạng thái nộp muộn"
+                                       Style="{StaticResource LabelText}"
+                                       Margin="0,0,0,8" />
+                            <Button Content="Theo hệ thống"
+                                    Command="{Binding UseComputedLateCommand}"
+                                    Style="{StaticResource SecondaryButton}"
+                                    Margin="0,0,0,6" />
+                            <Button Content="Đánh dấu muộn"
+                                    Command="{Binding MarkLateCommand}"
+                                    Style="{StaticResource SecondaryButton}"
+                                    Margin="0,0,0,6" />
+                            <Button Content="Đánh dấu đúng hạn"
+                                    Command="{Binding MarkOnTimeCommand}"
+                                    Style="{StaticResource SecondaryButton}" />
                             <Border Background="{DynamicResource DangerSoftBrush}"
                                     BorderBrush="{DynamicResource DangerBrush}"
                                     BorderThickness="1"

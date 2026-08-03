@@ -3,8 +3,8 @@ create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions;
 select plan(55);
 
-select is((select schema_version from public.examtransfer_cloud_meta where id=1),26,
-  'EssayFile grading remains available at schema 26');
+select is((select schema_version from public.examtransfer_cloud_meta where id=1),27,
+  'EssayFile grading remains available at schema 27');
 select has_function('public','get_public_essay_grade',array['uuid'],
   'teacher essay grade read RPC exists');
 select has_function('public','save_public_essay_grade',

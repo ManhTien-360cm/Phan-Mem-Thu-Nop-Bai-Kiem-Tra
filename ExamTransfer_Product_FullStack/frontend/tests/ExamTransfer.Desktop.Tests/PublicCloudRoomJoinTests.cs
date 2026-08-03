@@ -225,7 +225,7 @@ public sealed class PublicCloudRoomJoinTests
                 : request.RequestUri.AbsolutePath.EndsWith(
                     "/rpc/get_examtransfer_cloud_capabilities",
                     StringComparison.Ordinal)
-                    ? """{"schemaVersion":26,"criticalRpcs":["get_public_student_notification_events","send_public_teacher_message","get_student_results"]}"""
+                    ? """{"schemaVersion":27,"criticalRpcs":["get_public_student_notification_events","send_public_teacher_message","get_student_results","set_public_submission_late_override"]}"""
                     : $$"""
                     {
                       "sessionId":"{{Guid.NewGuid()}}",

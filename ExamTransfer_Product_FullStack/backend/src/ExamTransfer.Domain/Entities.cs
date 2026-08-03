@@ -339,6 +339,8 @@ public sealed class Submission : EntityBase
     public DateTimeOffset ClientSubmittedAtUtc { get; set; }
     public DateTimeOffset? ServerReceivedAtUtc { get; set; }
     public DateTimeOffset DeadlineUtc { get; set; }
+    public bool ComputedIsLate { get; set; }
+    public bool? LateOverride { get; set; }
     public bool IsLate { get; set; }
     public bool IsOfficial { get; set; }
     public string? ReceiptCode { get; set; }
@@ -374,6 +376,7 @@ public sealed class SubmissionFile : EntityBase
     public int TotalChunks { get; set; }
     public string ReceivedChunksJson { get; set; } = "[]";
     public TransferStatus TransferStatus { get; set; } = TransferStatus.Queued;
+    public bool ArchiveVerified { get; set; }
     public SyncStatus SyncStatus { get; set; } = SyncStatus.LocalOnly;
     public string? CloudObjectPath { get; set; }
 }

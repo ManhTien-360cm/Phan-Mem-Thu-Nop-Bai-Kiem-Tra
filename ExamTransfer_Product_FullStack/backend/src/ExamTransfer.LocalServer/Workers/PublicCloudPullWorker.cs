@@ -426,6 +426,9 @@ public sealed class PublicCloudPullWorker(
                 entity.ClientSubmittedAtUtc = DateValue(row, "client_submitted_at", record.UpdatedAtUtc);
                 entity.ServerReceivedAtUtc = NullableDate(row, "server_received_at");
                 entity.DeadlineUtc = DateValue(row, "deadline_at", record.UpdatedAtUtc);
+                entity.ComputedIsLate = OptionalBoolValue(row, "computed_is_late")
+                    ?? BoolValue(row, "is_late");
+                entity.LateOverride = OptionalBoolValue(row, "late_override");
                 entity.IsLate = BoolValue(row, "is_late");
                 entity.IsOfficial = BoolValue(row, "is_official");
                 entity.ReceiptCode = NullableString(row, "receipt_code");
@@ -448,7 +451,16 @@ public sealed class PublicCloudPullWorker(
                 entity.MimeType = NullableString(row, "mime_type") ?? "application/octet-stream";
                 entity.SizeBytes = LongValue(row, "size_bytes");
                 entity.Sha256 = StringValue(row, "sha256");
-                entity.TransferStatus = EnumValue(row, "transfer_status", TransferStatus.Queued);
+                var remoteTransferStatus = NullableString(row, "transfer_status");
+                entity.TransferStatus = remoteTransferStatus switch
+                {
+                    "Verified" => TransferStatus.Completed,
+                    "Completed" => TransferStatus.Completed,
+                    _ => Enum.TryParse<TransferStatus>(remoteTransferStatus, true, out var parsed)
+                        ? parsed
+                        : TransferStatus.Queued
+                };
+                entity.ArchiveVerified = BoolValue(row, "archive_signature_verified");
                 entity.SyncStatus = SyncStatus.Synced;
                 entity.CloudObjectPath = NullableString(row, "cloud_object_path");
                 Stamp(entity, record);
@@ -637,6 +649,10 @@ public sealed class PublicCloudPullWorker(
             : null;
     private static bool BoolValue(JsonElement row, string name) =>
         row.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.True;
+    private static bool? OptionalBoolValue(JsonElement row, string name) =>
+        row.TryGetProperty(name, out var value) && value.ValueKind != JsonValueKind.Null
+            ? value.ValueKind == JsonValueKind.True
+            : null;
     private static string? RawOrNull(JsonElement row, string name) =>
         row.TryGetProperty(name, out var value) && value.ValueKind != JsonValueKind.Null ? value.GetRawText() : null;
     private static T EnumValue<T>(JsonElement row, string name, T fallback = default) where T : struct, Enum =>

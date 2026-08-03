@@ -406,9 +406,8 @@ public sealed class EssayGradeServiceTests
                 StoredName = "answer.zip",
                 RelativePath = "answer.zip",
                 SizeBytes = 1,
-                TransferStatus = accessMode == SessionAccessMode.PublicCloud
-                    ? TransferStatus.Queued
-                    : TransferStatus.Completed,
+                TransferStatus = TransferStatus.Completed,
+                ArchiveVerified = accessMode == SessionAccessMode.PublicCloud,
                 SourceMode = accessMode == SessionAccessMode.PublicCloud ? "PublicCloud" : "Lan"
             });
             db.AddRange(owner, other, student, exam, session, participant, submission);

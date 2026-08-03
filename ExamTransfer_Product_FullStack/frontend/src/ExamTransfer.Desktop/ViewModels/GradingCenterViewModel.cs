@@ -112,7 +112,8 @@ public sealed class GradingCenterViewModel : ProductPageBase
                     submissionsById.GetValueOrDefault(item.Id))));
             SelectedWorkItem = selectedId.HasValue
                 ? Queue.FirstOrDefault(row => row.SubmissionId == selectedId && row.Type == selectedType)
-                : null;
+                    ?? Queue.FirstOrDefault()
+                : Queue.FirstOrDefault();
         });
 
     private void BeginDetailLoad(EssaySubmissionReviewRow? row)

@@ -23,7 +23,7 @@ public sealed class DbInitializerQuizTests
                 await DbInitializer.InitializeAsync(db, paths);
 
                 Assert.Equal(7, await db.Database.SqlQueryRaw<int>("SELECT COUNT(*) AS Value FROM sqlite_master WHERE type='table' AND name LIKE 'quiz_%'").SingleAsync());
-                Assert.Equal("\"12\"", (await db.AppSettingsSet.SingleAsync(x => x.Key == "schema.version")).ValueJson);
+                Assert.Equal("\"13\"", (await db.AppSettingsSet.SingleAsync(x => x.Key == "schema.version")).ValueJson);
 
                 var classroom = new ClassRoom
                 {
