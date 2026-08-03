@@ -196,6 +196,7 @@ public sealed class SupabaseIdentityLoginTests
 
         Assert.True(authenticated.Succeeded);
         Assert.Equal(login.UserId.ToString(), authenticated.Principal!.FindFirst("sub")?.Value);
+        Assert.Equal(ProviderUserId, authenticated.Principal.FindFirst("provider_user_id")?.Value);
         Assert.Equal(OrganizationId, authenticated.Principal.FindFirst("organization_id")?.Value);
         Assert.Equal(UserRole.Admin.ToString(), authenticated.Principal.FindFirst(System.Security.Claims.ClaimTypes.Role)?.Value);
         var tokenPrincipal = harness.Tokens.ValidateAccountToken(login.AccessToken!);

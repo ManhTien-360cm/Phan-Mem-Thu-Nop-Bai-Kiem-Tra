@@ -28,11 +28,13 @@ public sealed class CoreWorkflowPersistenceTests
     public async Task CreateClassAndExam_CaptureAuthenticatedOwnerForAuthorization()
     {
         await using var database = await FileDatabase.CreateAsync();
-        var actorId = Guid.NewGuid();
+        var localActorId = Guid.NewGuid();
+        var providerActorId = Guid.NewGuid();
         var principal = new ClaimsPrincipal(new ClaimsIdentity(
         [
-            new Claim(ClaimTypes.NameIdentifier, actorId.ToString()),
-            new Claim("sub", actorId.ToString())
+            new Claim(ClaimTypes.NameIdentifier, localActorId.ToString()),
+            new Claim("sub", localActorId.ToString()),
+            new Claim("provider_user_id", providerActorId.ToString())
         ], "test"));
         var accessor = new HttpContextAccessor
         {
@@ -76,10 +78,10 @@ public sealed class CoreWorkflowPersistenceTests
 
         database.Context.ChangeTracker.Clear();
         Assert.Equal(
-            actorId,
+            providerActorId,
             (await database.Context.ClassesSet.SingleAsync(x => x.Id == classroom.Id)).CreatedBy);
         Assert.Equal(
-            actorId,
+            providerActorId,
             (await database.Context.ExamsSet.SingleAsync(x => x.Id == exam.Id)).CreatedBy);
     }
 

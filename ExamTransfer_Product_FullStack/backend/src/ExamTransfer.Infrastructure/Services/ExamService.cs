@@ -877,7 +877,8 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
     };
     private Guid? RequestActorId() =>
         Guid.TryParse(
-            httpContextAccessor?.HttpContext?.User.FindFirstValue(ClaimTypes.NameIdentifier)
+            httpContextAccessor?.HttpContext?.User.FindFirstValue("provider_user_id")
+                ?? httpContextAccessor?.HttpContext?.User.FindFirstValue(ClaimTypes.NameIdentifier)
                 ?? httpContextAccessor?.HttpContext?.User.FindFirstValue("sub"),
             out var actorId)
             && actorId != Guid.Empty
