@@ -20,6 +20,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<QuizChoice> QuizChoicesSet => Set<QuizChoice>();
     public DbSet<QuizAttempt> QuizAttemptsSet => Set<QuizAttempt>();
     public DbSet<QuizAnswer> QuizAnswersSet => Set<QuizAnswer>();
+    public DbSet<QuizGradeMutationReceipt> QuizGradeMutationReceiptsSet => Set<QuizGradeMutationReceipt>();
     public DbSet<ExamSession> ExamSessionsSet => Set<ExamSession>();
     public DbSet<SessionParticipant> SessionParticipantsSet => Set<SessionParticipant>();
     public DbSet<ParticipantExtraTime> ParticipantExtraTimesSet => Set<ParticipantExtraTime>();
@@ -27,6 +28,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<Submission> SubmissionsSet => Set<Submission>();
     public DbSet<SubmissionFile> SubmissionFilesSet => Set<SubmissionFile>();
     public DbSet<Grade> GradesSet => Set<Grade>();
+    public DbSet<EssayGradeMutationReceipt> EssayGradeMutationReceiptsSet => Set<EssayGradeMutationReceipt>();
     public DbSet<RubricScore> RubricScoresSet => Set<RubricScore>();
     public DbSet<GradedAttachment> GradedAttachmentsSet => Set<GradedAttachment>();
     public DbSet<ControlPolicy> ControlPoliciesSet => Set<ControlPolicy>();
@@ -110,6 +112,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         ConfigureEntity<QuizChoice>(modelBuilder, "quiz_choices");
         ConfigureEntity<QuizAttempt>(modelBuilder, "quiz_attempts");
         ConfigureEntity<QuizAnswer>(modelBuilder, "quiz_answers");
+        ConfigureEntity<QuizGradeMutationReceipt>(modelBuilder, "quiz_grade_mutation_receipts");
         ConfigureEntity<ExamSession>(modelBuilder, "exam_sessions");
         ConfigureEntity<SessionParticipant>(modelBuilder, "session_participants");
         ConfigureEntity<ParticipantExtraTime>(modelBuilder, "participant_extra_time");
@@ -117,6 +120,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         ConfigureEntity<Submission>(modelBuilder, "submissions");
         ConfigureEntity<SubmissionFile>(modelBuilder, "submission_files");
         ConfigureEntity<Grade>(modelBuilder, "grades");
+        ConfigureEntity<EssayGradeMutationReceipt>(modelBuilder, "essay_grade_mutation_receipts");
         ConfigureEntity<RubricScore>(modelBuilder, "rubric_scores");
         ConfigureEntity<GradedAttachment>(modelBuilder, "graded_attachments");
         ConfigureEntity<ControlPolicy>(modelBuilder, "control_policies");
@@ -156,6 +160,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<QuizChoice>().HasIndex(x => new { x.QuestionId, x.Order }).IsUnique();
         modelBuilder.Entity<QuizAttempt>().HasIndex(x => new { x.SessionId, x.ParticipantId }).IsUnique();
         modelBuilder.Entity<QuizAnswer>().HasIndex(x => new { x.AttemptId, x.QuestionId }).IsUnique();
+        modelBuilder.Entity<QuizGradeMutationReceipt>().HasIndex(x => new { x.AttemptId, x.CreatedAtUtc });
         modelBuilder.Entity<ExamSession>().HasIndex(x => x.RoomCode);
         modelBuilder.Entity<SessionParticipant>().HasIndex(x => new { x.SessionId, x.StudentCode }).IsUnique();
         modelBuilder.Entity<SessionParticipant>().HasIndex(x => x.LastSeenUtc);
@@ -163,6 +168,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<Submission>().HasIndex(x => new { x.ParticipantId, x.IdempotencyKey }).IsUnique();
         modelBuilder.Entity<SubmissionFile>().HasIndex(x => x.SubmissionId);
         modelBuilder.Entity<Grade>().HasIndex(x => x.SubmissionId).IsUnique();
+        modelBuilder.Entity<EssayGradeMutationReceipt>().HasIndex(x => new { x.SubmissionId, x.CreatedAtUtc });
         modelBuilder.Entity<RubricScore>().HasIndex(x => new { x.GradeId, x.CriterionKey }).IsUnique();
         modelBuilder.Entity<ControlPolicy>().HasIndex(x => new { x.SessionId, x.Version }).IsUnique();
         modelBuilder.Entity<DevicePolicyStatus>().HasIndex(x => new { x.ParticipantId, x.PolicyVersion }).IsUnique();

@@ -1,6 +1,7 @@
 using ExamTransfer.Application;
 using ExamTransfer.Domain;
 using ExamTransfer.Infrastructure.Persistence;
+using ExamTransfer.Infrastructure.Services;
 using ExamTransfer.Shared.Contracts;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -35,7 +36,6 @@ public sealed class LanSessionParticipantMutationHandler(
         participant.Status = ParticipantStatus.Approved;
         participant.ApprovedAtUtc = DateTimeOffset.UtcNow;
         participant.Session.Sequence++;
-        await db.SaveChangesAsync(cancellationToken);
 
         var issued = tokens.IssueParticipantToken(
             participant.SessionId,
@@ -46,6 +46,13 @@ public sealed class LanSessionParticipantMutationHandler(
             SessionParticipantMutationRules.ParticipantTokenLifetime(
                 _options,
                 participant.Session));
+
+        OnlyLanStudentNotificationOutbox.Enqueue(
+            db,
+            StudentNotificationEventType.ParticipantApproved,
+            participant.SessionId,
+            participant.Session.Sequence,
+            participantId: participant.Id);
 
         await audit.WriteAsync(
             "ParticipantApproved",
@@ -61,14 +68,6 @@ public sealed class LanSessionParticipantMutationHandler(
             "upsert",
             SessionParticipantMutationRules.ToCloud(participant),
             cancellationToken: cancellationToken);
-        await realtime.PublishParticipantAsync(
-            participant.SessionId,
-            participant.Id,
-            RealtimeEvents.ParticipantApproved,
-            participant.Session.Sequence,
-            new ParticipantApprovedEvent(participant.Id, issued.ExpiresAtUtc),
-            cancellationToken);
-
         return participant.ToDto(
             DateTimeOffset.UtcNow,
             _options.Session.DisconnectAfterSeconds,
@@ -83,7 +82,13 @@ public sealed class LanSessionParticipantMutationHandler(
     {
         participant.Status = ParticipantStatus.Rejected;
         participant.Session.Sequence++;
-        await db.SaveChangesAsync(cancellationToken);
+        OnlyLanStudentNotificationOutbox.Enqueue(
+            db,
+            StudentNotificationEventType.ParticipantAdmissionRejected,
+            participant.SessionId,
+            participant.Session.Sequence,
+            participantId: participant.Id,
+            reason: reason);
         await audit.WriteAsync(
             "ParticipantRejected",
             nameof(SessionParticipant),
@@ -170,25 +175,14 @@ public sealed class LanSessionParticipantMutationHandler(
             events.Add((participant, session.Sequence, issued));
         }
 
-        await db.SaveChangesAsync(cancellationToken);
-
         foreach (var item in events)
         {
-            await outbox.EnqueueAsync(
-                "session_participants",
-                item.Participant.Id.ToString(),
-                "upsert",
-                SessionParticipantMutationRules.ToCloud(item.Participant),
-                cancellationToken: cancellationToken);
-            await realtime.PublishParticipantAsync(
+            OnlyLanStudentNotificationOutbox.Enqueue(
+                db,
+                StudentNotificationEventType.ParticipantApproved,
                 session.Id,
-                item.Participant.Id,
-                RealtimeEvents.ParticipantApproved,
                 item.Sequence,
-                new ParticipantApprovedEvent(
-                    item.Participant.Id,
-                    item.Token.ExpiresAtUtc),
-                cancellationToken);
+                participantId: item.Participant.Id);
         }
 
         await audit.WriteAsync(
@@ -199,6 +193,16 @@ public sealed class LanSessionParticipantMutationHandler(
             null,
             new { ids = requestedIds, approvedCount = events.Count },
             cancellationToken);
+
+        foreach (var item in events)
+        {
+            await outbox.EnqueueAsync(
+                "session_participants",
+                item.Participant.Id.ToString(),
+                "upsert",
+                SessionParticipantMutationRules.ToCloud(item.Participant),
+                cancellationToken: cancellationToken);
+        }
 
         return participants
             .Select(x => x.ToDto(

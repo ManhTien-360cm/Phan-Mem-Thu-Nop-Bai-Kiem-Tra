@@ -1,8 +1,8 @@
 begin;
 select plan(30);
 
-select is((select schema_version from public.examtransfer_cloud_meta where id=1),23,
-  'PublicCloud grading privacy schema version is 23');
+select is((select schema_version from public.examtransfer_cloud_meta where id=1),26,
+  'PublicCloud grading privacy remains available at schema version 26');
 select has_function('public','save_public_quiz_grade',
   array['uuid','numeric','text','bigint','uuid'],'save grade RPC exists');
 select has_function('public','return_public_quiz_grade',
@@ -13,7 +13,7 @@ select ok(position(
   '''save_public_quiz_grade'''
   in lower(pg_get_functiondef(
     'public.get_examtransfer_cloud_capabilities()'::regprocedure))) > 0,
-  'schema 23 capabilities advertise teacher grading RPCs');
+  'schema 26 capabilities advertise teacher grading RPCs');
 select ok(not has_function_privilege('anon',
   'public.save_public_quiz_grade(uuid,numeric,text,bigint,uuid)','EXECUTE'),
   'anon cannot save a quiz grade');
@@ -95,6 +95,26 @@ values (
   '51100000-0000-0000-0000-000000000000',
   'P2GRADE','Finished',now()-interval '1 hour','PublicCloud',
   false,false,'MultipleChoice','Standard','Hidden',1,now(),now());
+insert into public.quiz_questions(
+  id,organization_id,exam_id,version,sort_order,question_text,points,multiple,created_at,updated_at)
+values
+  ('51210000-0000-0000-0000-000000000001',
+   '51000000-0000-0000-0000-000000000000',
+   '51200000-0000-0000-0000-000000000000',1,1,'Weighted correct',7.50,false,now(),now()),
+  ('51210000-0000-0000-0000-000000000002',
+   '51000000-0000-0000-0000-000000000000',
+   '51200000-0000-0000-0000-000000000000',1,2,'Weighted unanswered',2.50,false,now(),now());
+insert into public.quiz_choices(
+  id,organization_id,question_id,sort_order,choice_text,is_correct,created_at,updated_at)
+values
+  ('51220000-0000-0000-0000-000000000001','51000000-0000-0000-0000-000000000000',
+   '51210000-0000-0000-0000-000000000001',1,'Correct 1',true,now(),now()),
+  ('51220000-0000-0000-0000-000000000002','51000000-0000-0000-0000-000000000000',
+   '51210000-0000-0000-0000-000000000001',2,'Wrong 1',false,now(),now()),
+  ('51220000-0000-0000-0000-000000000003','51000000-0000-0000-0000-000000000000',
+   '51210000-0000-0000-0000-000000000002',1,'Correct 2',true,now(),now()),
+  ('51220000-0000-0000-0000-000000000004','51000000-0000-0000-0000-000000000000',
+   '51210000-0000-0000-0000-000000000002',2,'Wrong 2',false,now(),now());
 insert into public.session_participants(
   id,organization_id,session_id,user_id,student_code,display_name,device_id,status,
   joined_at,download_status,submission_status,extra_time_minutes,resubmit_allowed,
@@ -145,14 +165,28 @@ values
    '51400000-0000-0000-0000-000000000001',
    1,'Hidden','Finalized',now()-interval '30 minutes',now(),
    now()-interval '20 minutes',8.00,8.00,10.00,'Graded',
-   now()-interval '20 minutes','[]'::jsonb,'PublicCloud',now(),now()),
+   now()-interval '20 minutes',
+   '[{"id":"51210000-0000-0000-0000-000000000001","points":7.50,"multiple":false,"choices":[{"id":"51220000-0000-0000-0000-000000000001"},{"id":"51220000-0000-0000-0000-000000000002"}]},{"id":"51210000-0000-0000-0000-000000000002","points":2.50,"multiple":false,"choices":[{"id":"51220000-0000-0000-0000-000000000003"},{"id":"51220000-0000-0000-0000-000000000004"}]}]'::jsonb,
+   'PublicCloud',now(),now()),
   ('51600000-0000-0000-0000-000000000002',
    '51000000-0000-0000-0000-000000000000',
    '51300000-0000-0000-0000-000000000000',
    '51400000-0000-0000-0000-000000000002',
    1,'Hidden','Finalized',now()-interval '30 minutes',now(),
    now()-interval '20 minutes',9.00,9.00,10.00,'Graded',
-   now()-interval '20 minutes','[]'::jsonb,'PublicCloud',now(),now());
+   now()-interval '20 minutes',
+   '[{"id":"51210000-0000-0000-0000-000000000001","points":7.50,"multiple":false,"choices":[{"id":"51220000-0000-0000-0000-000000000001"},{"id":"51220000-0000-0000-0000-000000000002"}]},{"id":"51210000-0000-0000-0000-000000000002","points":2.50,"multiple":false,"choices":[{"id":"51220000-0000-0000-0000-000000000003"},{"id":"51220000-0000-0000-0000-000000000004"}]}]'::jsonb,
+   'PublicCloud',now(),now());
+insert into public.quiz_answers(
+  id,organization_id,attempt_id,question_id,choice_ids,revision,client_updated_at,
+  source_mode,created_at,updated_at)
+values (
+  '51610000-0000-0000-0000-000000000001',
+  '51000000-0000-0000-0000-000000000000',
+  '51600000-0000-0000-0000-000000000001',
+  '51210000-0000-0000-0000-000000000001',
+  '["51220000-0000-0000-0000-000000000001"]'::jsonb,
+  1,now()-interval '20 minutes','PublicCloud',now(),now());
 
 create temporary table phase2_grade_state(
   key text primary key,
@@ -316,7 +350,7 @@ select is(
     '51600000-0000-0000-0000-000000000001','Recheck rubric',
     (select value from phase2_grade_state where key='owner'),
     '61000000-0000-0000-0000-000000000005')->>'gradingStatus',
-  'InProgress',
+  'Graded',
   'teacher reopens the returned grade');
 
 select set_config(

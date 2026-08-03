@@ -160,14 +160,26 @@ public sealed class DashboardViewModel : ObservableObject, IAsyncInitializable, 
         }
 
         Activities.Clear();
+        foreach (var recentSession in data.RecentSessions)
+        {
+            var activityTime = recentSession.EndTimeUtc
+                ?? recentSession.StartTimeUtc
+                ?? recentSession.ServerNowUtc;
+            Activities.Add(new(
+                activityTime.ToLocalTime().ToString("HH:mm"),
+                recentSession.Title,
+                $"Phòng {recentSession.RoomCode}",
+                "primary",
+                "\uE9D2"));
+        }
         Raise(nameof(HasActivities));
 
-        if (data.RecentSessions.FirstOrDefault() is { } synchronizedSession)
+        if (data.ActiveSession is { } synchronizedSession)
         {
             serverClock.Synchronize(synchronizedSession.ServerNowUtc);
         }
 
-        ActiveSession = data.RecentSessions.FirstOrDefault() is { } session
+        ActiveSession = data.ActiveSession is { } session
             ? new ActiveSessionCard(
                 session.Title,
                 session.RoomCode,

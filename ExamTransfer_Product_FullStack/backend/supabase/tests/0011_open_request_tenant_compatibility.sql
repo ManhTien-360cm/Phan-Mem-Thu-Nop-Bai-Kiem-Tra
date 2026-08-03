@@ -87,8 +87,8 @@ values
   ('81800000-0000-4000-8000-000000000001','81000000-0000-0000-0000-000000000000','81700000-0000-0000-0000-000000000001',1,'2',true),
   ('81800000-0000-4000-8000-000000000002','81000000-0000-0000-0000-000000000000','81700000-0000-0000-0000-000000000001',2,'3',false);
 
-select is((select schema_version from public.examtransfer_cloud_meta where id=1),23,
-  'final OpenRequest tenant compatibility requires schema 21');
+select is((select schema_version from public.examtransfer_cloud_meta where id=1),26,
+  'final OpenRequest tenant compatibility remains available at schema 26');
 select ok((select prosecdef from pg_proc
   where oid='private.enforce_public_tenant_consistency()'::regprocedure)
   and (select proconfig::text from pg_proc

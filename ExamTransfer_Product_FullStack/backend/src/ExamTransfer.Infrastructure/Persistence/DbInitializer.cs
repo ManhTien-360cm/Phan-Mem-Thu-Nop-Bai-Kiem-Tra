@@ -7,7 +7,7 @@ namespace ExamTransfer.Infrastructure.Persistence;
 
 public static class DbInitializer
 {
-    public const string SchemaVersion = "10";
+    public const string SchemaVersion = "12";
 
     public static async Task InitializeAsync(AppDbContext db, IStoragePaths paths, CancellationToken cancellationToken = default)
     {
@@ -57,6 +57,12 @@ public static class DbInitializer
 
         await EnsureColumnAsync(db, "graded_attachments", "SyncStatus", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
         await EnsureColumnAsync(db, "graded_attachments", "CloudObjectPath", "TEXT NULL", cancellationToken);
+        await EnsureColumnAsync(db, "grades", "SourceMode", "TEXT NOT NULL DEFAULT 'Lan'", cancellationToken);
+        await EnsureColumnAsync(db, "grades", "CloudVersion", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureColumnAsync(db, "grades", "CloudUpdatedAtUtc", "TEXT NULL", cancellationToken);
+        await EnsureColumnAsync(db, "grades", "CloudSyncState", "TEXT NOT NULL DEFAULT 'LocalOnly'", cancellationToken);
+        await EnsureColumnAsync(db, "grades", "Revision", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureEssayGradingTablesAsync(db, cancellationToken);
         await EnsureColumnAsync(db, "export_jobs", "SyncStatus", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
         await EnsureColumnAsync(db, "export_jobs", "CloudObjectPath", "TEXT NULL", cancellationToken);
         await EnsureColumnAsync(db, "backups", "SyncStatus", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
@@ -101,6 +107,7 @@ public static class DbInitializer
               AND "AdmissionMode" = 0;
             """, cancellationToken);
         await EnsureQuizTablesAsync(db, cancellationToken);
+        await EnsureColumnAsync(db, "quiz_attempts", "AttemptNumber", "INTEGER NOT NULL DEFAULT 1", cancellationToken);
         await EnsureColumnAsync(db, "quiz_attempts", "ResultPolicySnapshot", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
         await EnsureColumnAsync(db, "quiz_attempts", "AutoScore", "TEXT NULL", cancellationToken);
         await EnsureColumnAsync(db, "quiz_attempts", "GradingStatus", "INTEGER NOT NULL DEFAULT 1", cancellationToken);
@@ -108,6 +115,7 @@ public static class DbInitializer
         await EnsureColumnAsync(db, "quiz_attempts", "GraderId", "TEXT NULL", cancellationToken);
         await EnsureColumnAsync(db, "quiz_attempts", "GradedAtUtc", "TEXT NULL", cancellationToken);
         await EnsureColumnAsync(db, "quiz_attempts", "ReturnedAtUtc", "TEXT NULL", cancellationToken);
+        await EnsureQuizGradingTablesAsync(db, cancellationToken);
         await db.Database.ExecuteSqlRawAsync("""
             UPDATE "quiz_attempts"
             SET "AutoScore" = "Score",
@@ -189,6 +197,52 @@ public static class DbInitializer
         await db.Database.ExecuteSqlRawAsync(sql, cancellationToken);
     }
 
+    private static async Task EnsureEssayGradingTablesAsync(
+        AppDbContext db,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            CREATE TABLE IF NOT EXISTS "essay_grade_mutation_receipts" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_essay_grade_mutation_receipts" PRIMARY KEY,
+                "SubmissionId" TEXT NOT NULL,
+                "ActorId" TEXT NOT NULL,
+                "Action" TEXT NOT NULL,
+                "RequestHash" TEXT NOT NULL,
+                "ResultJson" TEXT NOT NULL,
+                "EventId" TEXT NULL,
+                "GradeRevision" INTEGER NOT NULL,
+                "CreatedAtUtc" TEXT NOT NULL,
+                "UpdatedAtUtc" TEXT NOT NULL,
+                "RowVersion" TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS "IX_essay_grade_mutation_receipts_SubmissionId_CreatedAtUtc"
+                ON "essay_grade_mutation_receipts" ("SubmissionId", "CreatedAtUtc");
+            """;
+        await db.Database.ExecuteSqlRawAsync(sql, cancellationToken);
+    }
+
+    private static async Task EnsureQuizGradingTablesAsync(
+        AppDbContext db,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            CREATE TABLE IF NOT EXISTS "quiz_grade_mutation_receipts" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_quiz_grade_mutation_receipts" PRIMARY KEY,
+                "AttemptId" TEXT NOT NULL,
+                "ActorId" TEXT NOT NULL,
+                "Action" TEXT NOT NULL,
+                "RequestHash" TEXT NOT NULL,
+                "ResultJson" TEXT NOT NULL,
+                "EventId" TEXT NULL,
+                "AttemptRowVersion" TEXT NOT NULL,
+                "CreatedAtUtc" TEXT NOT NULL,
+                "UpdatedAtUtc" TEXT NOT NULL,
+                "RowVersion" TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS "IX_quiz_grade_mutation_receipts_AttemptId_CreatedAtUtc"
+                ON "quiz_grade_mutation_receipts" ("AttemptId", "CreatedAtUtc");
+            """;
+        await db.Database.ExecuteSqlRawAsync(sql, cancellationToken);
+    }
+
     private static async Task EnsurePublicCloudReplicaTablesAsync(
         AppDbContext db,
         CancellationToken cancellationToken)
@@ -247,7 +301,7 @@ public static class DbInitializer
             CREATE UNIQUE INDEX IF NOT EXISTS "IX_quiz_choices_QuestionId_Order" ON "quiz_choices" ("QuestionId", "Order");
             CREATE TABLE IF NOT EXISTS "quiz_attempts" (
                 "Id" TEXT NOT NULL CONSTRAINT "PK_quiz_attempts" PRIMARY KEY,
-                "SessionId" TEXT NOT NULL, "ParticipantId" TEXT NOT NULL, "ExamVersion" INTEGER NOT NULL, "Status" INTEGER NOT NULL,
+                "SessionId" TEXT NOT NULL, "ParticipantId" TEXT NOT NULL, "AttemptNumber" INTEGER NOT NULL DEFAULT 1, "ExamVersion" INTEGER NOT NULL, "Status" INTEGER NOT NULL,
                 "StartedAtUtc" TEXT NOT NULL, "DeadlineUtc" TEXT NOT NULL, "FinalizedAtUtc" TEXT NULL,
                 "Score" TEXT NULL, "MaxScore" TEXT NOT NULL, "SnapshotJson" TEXT NOT NULL, "FinalizeIdempotencyKey" TEXT NULL,
                 "CreatedAtUtc" TEXT NOT NULL, "UpdatedAtUtc" TEXT NOT NULL, "RowVersion" TEXT NOT NULL,

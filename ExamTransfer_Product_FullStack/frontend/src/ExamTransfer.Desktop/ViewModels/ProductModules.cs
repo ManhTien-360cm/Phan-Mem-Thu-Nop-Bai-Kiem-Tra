@@ -915,11 +915,16 @@ public sealed class SessionManagementViewModel : ProductPageBase
     private bool allVisibleChecked;
     private readonly Func<TimeSpan, CancellationToken, Task> projectionDelay;
     private readonly int projectionPollAttempts;
+    private bool suppressProjectionSelectionRefresh;
+    private long projectionSelectionVersion;
     private Guid? projectionSessionId;
+    private string? projectionRowVersion;
+    private string? projectionRoomCode;
     private string projectionStatus = "Phiên LAN không cần PublicCloud projection.";
     private string projectionTone = "info";
     private bool canShareRoomCode = true;
     private bool canRetryProjection;
+    private bool canRecoverRoomCode;
     private string createResult = "Kỳ thi đã mở và đang chờ học sinh";
 
     public SessionManagementViewModel(
@@ -955,6 +960,9 @@ public sealed class SessionManagementViewModel : ProductPageBase
         RetryProjectionCommand = new AsyncRelayCommand(
             RetryProjectionAsync,
             () => !IsBusy && projectionSessionId.HasValue && CanRetryProjection);
+        RecoverRoomCodeCommand = new AsyncRelayCommand(
+            RecoverRoomCodeAsync,
+            () => !IsBusy && projectionSessionId.HasValue && CanRecoverRoomCode);
     }
 
     public ObservableCollection<ExamSummaryDto> Exams { get; } = new();
@@ -966,10 +974,48 @@ public sealed class SessionManagementViewModel : ProductPageBase
         set
         {
             if (!Set(ref selectedSession, value)) return;
+            var selectionVersion = ++projectionSelectionVersion;
             if (value is not null)
             {
                 AutoApprove = value.AutoApprove;
                 AccessMode = value.AccessMode;
+                RoomCode = value.RoomCode;
+                if (value.AccessMode == SessionAccessMode.PublicCloud)
+                {
+                    projectionSessionId = value.Id;
+                    projectionRowVersion = value.RowVersion;
+                    projectionRoomCode = value.RoomCode;
+                    ApplyProjection(new(
+                        value.Id,
+                        true,
+                        false,
+                        SyncStatus.Pending,
+                        "PUBLICCLOUD_PROJECTION_PENDING",
+                        "Đang kiểm tra trạng thái PublicCloud trước khi chia sẻ mã phòng.",
+                        0));
+                    if (!suppressProjectionSelectionRefresh)
+                        _ = RefreshProjectionForSelectionAsync(
+                            value.Id,
+                            selectionVersion,
+                            DisposeToken);
+                }
+                else
+                {
+                    ClearProjectionIdentity();
+                    ApplyLanProjection(value.Id);
+                }
+            }
+            else
+            {
+                ClearProjectionIdentity();
+                ApplyProjection(new(
+                    Guid.Empty,
+                    true,
+                    false,
+                    SyncStatus.Pending,
+                    "NO_SESSION_SELECTED",
+                    "Chọn một phòng thi để xem trạng thái sẵn sàng.",
+                    0));
             }
             RaiseCommands();
         }
@@ -986,20 +1032,14 @@ public sealed class SessionManagementViewModel : ProductPageBase
             if (!Set(ref accessMode, value))
                 return;
             if (value == SessionAccessMode.LanOnly)
-                ApplyProjection(new(
-                    Guid.Empty,
-                    false,
-                    true,
-                    SyncStatus.LocalOnly,
-                    "LAN_ONLY",
-                    "Phiên LAN không cần PublicCloud projection.",
-                    0));
+                ApplyLanProjection(SelectedSession?.Id ?? Guid.Empty);
         }
     }
     public string ProjectionStatus => projectionStatus;
     public string ProjectionTone => projectionTone;
     public bool CanShareRoomCode => canShareRoomCode;
     public bool CanRetryProjection => canRetryProjection;
+    public bool CanRecoverRoomCode => canRecoverRoomCode;
     public int SelectedArchiveCount => Sessions.Count(row => row.IsChecked);
     public bool AllVisibleChecked => allVisibleChecked;
     public ICommand RefreshCommand { get; }
@@ -1017,6 +1057,7 @@ public sealed class SessionManagementViewModel : ProductPageBase
     public ICommand CancelCommand { get; }
     public ICommand SaveSettingsCommand { get; }
     public ICommand RetryProjectionCommand { get; }
+    public ICommand RecoverRoomCodeCommand { get; }
 
     protected override async Task LoadAsync(CancellationToken ct)
     {
@@ -1026,7 +1067,11 @@ public sealed class SessionManagementViewModel : ProductPageBase
         });
     }
 
-    private async Task RefreshSessionsCoreAsync(Guid? examId, Guid? sessionId, CancellationToken ct)
+    private async Task RefreshSessionsCoreAsync(
+        Guid? examId,
+        Guid? sessionId,
+        CancellationToken ct,
+        bool refreshProjection = true)
     {
         var exams = ApiGuard.Require(await api.GetExamsAsync(ct));
         var sessions = ApiGuard.Require(await api.GetSessionsAsync(ct));
@@ -1035,9 +1080,22 @@ public sealed class SessionManagementViewModel : ProductPageBase
         SelectedExam = examId.HasValue
             ? Exams.FirstOrDefault(x => x.Id == examId.Value) ?? Exams.FirstOrDefault()
             : Exams.FirstOrDefault();
-        SelectedSession = sessionId.HasValue
-            ? Sessions.FirstOrDefault(x => x.Id == sessionId.Value) ?? Sessions.FirstOrDefault()
-            : Sessions.FirstOrDefault();
+        suppressProjectionSelectionRefresh = true;
+        try
+        {
+            SelectedSession = sessionId.HasValue
+                ? Sessions.FirstOrDefault(x => x.Id == sessionId.Value) ?? Sessions.FirstOrDefault()
+                : Sessions.FirstOrDefault();
+        }
+        finally
+        {
+            suppressProjectionSelectionRefresh = false;
+        }
+        if (refreshProjection && SelectedSession?.AccessMode == SessionAccessMode.PublicCloud)
+            await RefreshProjectionForSelectionAsync(
+                SelectedSession.Id,
+                projectionSelectionVersion,
+                ct);
     }
 
     private Task CreateAsync() => RunAsync(
@@ -1061,8 +1119,14 @@ public sealed class SessionManagementViewModel : ProductPageBase
                 SessionAdmissionMode.OpenRequest),
             ct));
         RoomCode = detail.Summary.RoomCode;
-        await RefreshSessionsCoreAsync(SelectedExam.Id, detail.Summary.Id, ct);
+        await RefreshSessionsCoreAsync(
+            SelectedExam.Id,
+            detail.Summary.Id,
+            ct,
+            refreshProjection: false);
         projectionSessionId = detail.Summary.Id;
+        projectionRowVersion = detail.Summary.RowVersion;
+        projectionRoomCode = detail.Summary.RoomCode;
         if (detail.Summary.AccessMode == SessionAccessMode.PublicCloud)
         {
             createResult = "Phòng đã được lưu cục bộ; đang kiểm tra PublicCloud.";
@@ -1101,6 +1165,114 @@ public sealed class SessionManagementViewModel : ProductPageBase
             });
     }
 
+    private async Task RecoverRoomCodeAsync()
+    {
+        if (!projectionSessionId.HasValue || string.IsNullOrWhiteSpace(projectionRowVersion))
+            return;
+        await RunAsync(
+            "Đang đổi mã và đồng bộ lại PublicCloud",
+            () => ProjectionStatus,
+            async ct =>
+            {
+                var normalizedInput = string.IsNullOrWhiteSpace(RoomCode) ? null : RoomCode.Trim();
+                var requestedCode = string.Equals(
+                    normalizedInput,
+                    projectionRoomCode,
+                    StringComparison.Ordinal)
+                    ? null
+                    : normalizedInput;
+                var detail = ApiGuard.Require(await api.PutAsync<ChangePublicCloudRoomCodeRequest, SessionDetailDto>(
+                    $"api/v1/sessions/{projectionSessionId}/room-code",
+                    new(requestedCode, projectionRowVersion),
+                    ct));
+                projectionSessionId = detail.Summary.Id;
+                projectionRowVersion = detail.Summary.RowVersion;
+                projectionRoomCode = detail.Summary.RoomCode;
+                RoomCode = detail.Summary.RoomCode;
+                suppressProjectionSelectionRefresh = true;
+                try
+                {
+                    ReplaceSelected(detail.Summary);
+                }
+                finally
+                {
+                    suppressProjectionSelectionRefresh = false;
+                }
+                ApplyProjection(new(
+                    detail.Summary.Id,
+                    true,
+                    false,
+                    SyncStatus.Pending,
+                    "PUBLICCLOUD_PROJECTION_PENDING",
+                    "Mã mới đã được lưu; đang chờ PublicCloud xác nhận sẵn sàng.",
+                    0));
+                await AwaitProjectionAsync(detail.Summary.Id, ct);
+            });
+    }
+
+    private async Task RefreshProjectionForSelectionAsync(
+        Guid sessionId,
+        long selectionVersion,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var response = await api.GetAsync<CloudProjectionReadinessView>(
+                $"api/v1/sessions/{sessionId}/cloud-projection",
+                cancellationToken);
+            if (selectionVersion != projectionSelectionVersion
+                || SelectedSession?.Id != sessionId
+                || SelectedSession.AccessMode != SessionAccessMode.PublicCloud)
+                return;
+            if (response is null)
+            {
+                ApplyProjection(new(
+                    sessionId,
+                    true,
+                    false,
+                    SyncStatus.Pending,
+                    "PUBLICCLOUD_PROJECTION_UNAVAILABLE",
+                    "Chưa đọc được trạng thái PublicCloud; không chia sẻ mã phòng.",
+                    0));
+                return;
+            }
+            ApplyProjection(ApiGuard.Require(response));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            FrontendLogger.Log(ex, nameof(RefreshProjectionForSelectionAsync));
+            if (selectionVersion == projectionSelectionVersion
+                && SelectedSession?.Id == sessionId)
+                ApplyProjection(new(
+                    sessionId,
+                    true,
+                    false,
+                    SyncStatus.Failed,
+                    "PUBLICCLOUD_PROJECTION_UNAVAILABLE",
+                    "Không đọc được trạng thái PublicCloud; không chia sẻ mã phòng.",
+                    0));
+        }
+    }
+
+    private void ClearProjectionIdentity()
+    {
+        projectionSessionId = null;
+        projectionRowVersion = null;
+        projectionRoomCode = null;
+    }
+
+    private void ApplyLanProjection(Guid sessionId) => ApplyProjection(new(
+        sessionId,
+        false,
+        true,
+        SyncStatus.LocalOnly,
+        "LAN_ONLY",
+        "Phiên LAN không cần PublicCloud projection.",
+        0));
+
     private async Task AwaitProjectionAsync(Guid sessionId, CancellationToken cancellationToken)
     {
         for (var attempt = 0; attempt < projectionPollAttempts; attempt++)
@@ -1126,6 +1298,8 @@ public sealed class SessionManagementViewModel : ProductPageBase
 
     private void ApplyProjection(CloudProjectionReadinessView readiness)
     {
+        var isRoomCodeConflict = readiness.Status == SyncStatus.Conflict
+            && readiness.Code == ErrorCodes.RoomCodeConflict;
         projectionStatus = readiness.Message;
         projectionTone = readiness.Ready
             ? "success"
@@ -1134,12 +1308,18 @@ public sealed class SessionManagementViewModel : ProductPageBase
                 : "warning";
         canShareRoomCode = !readiness.Required || readiness.Ready;
         canRetryProjection = readiness.Required && !readiness.Ready
+            && !isRoomCodeConflict
             && (readiness.Status is SyncStatus.Failed or SyncStatus.Conflict
                 || readiness.Code == "PUBLICCLOUD_PROJECTION_TIMEOUT");
+        canRecoverRoomCode = readiness.Required && !readiness.Ready
+            && isRoomCodeConflict
+            && projectionSessionId.HasValue
+            && !string.IsNullOrWhiteSpace(projectionRowVersion);
         Raise(nameof(ProjectionStatus));
         Raise(nameof(ProjectionTone));
         Raise(nameof(CanShareRoomCode));
         Raise(nameof(CanRetryProjection));
+        Raise(nameof(CanRecoverRoomCode));
         RaiseCommands();
     }
 
@@ -1280,7 +1460,7 @@ public sealed class SessionManagementViewModel : ProductPageBase
 
     protected override void RaiseCommands()
     {
-        foreach (var command in new[] { RefreshCommand, CreateCommand, BulkArchiveCommand, OpenCommand, DistributeCommand, StartCommand, PauseCommand, ResumeCommand, CollectCommand, EndCommand, CancelCommand, SaveSettingsCommand, RetryProjectionCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
+        foreach (var command in new[] { RefreshCommand, CreateCommand, BulkArchiveCommand, OpenCommand, DistributeCommand, StartCommand, PauseCommand, ResumeCommand, CollectCommand, EndCommand, CancelCommand, SaveSettingsCommand, RetryProjectionCommand, RecoverRoomCodeCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
         (ToggleArchiveSelectionCommand as RelayCommand<SelectableSessionRow>)?.RaiseCanExecuteChanged();
         (ToggleAllVisibleArchiveSelectionCommand as RelayCommand)?.RaiseCanExecuteChanged();
     }

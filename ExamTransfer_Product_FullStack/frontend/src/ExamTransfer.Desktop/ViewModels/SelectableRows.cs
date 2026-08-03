@@ -62,5 +62,6 @@ public sealed class SelectableSessionRow(SessionSummaryDto source)
     public SessionCountsDto Counts => Source.Counts;
     public SessionAccessMode AccessMode => Source.AccessMode;
     public bool AutoApprove => Source.AutoApprove;
+    public string RowVersion => Source.RowVersion;
     public override bool CanArchive => Source.Status is SessionStatus.Finished or SessionStatus.Cancelled;
 }

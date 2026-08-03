@@ -2,8 +2,8 @@ begin;
 create extension if not exists pgtap with schema extensions;
 select plan(22);
 
-select is((select schema_version from public.examtransfer_cloud_meta where id=1),23,
-  'PublicCloud grading privacy advances cloud schema to 23');
+select is((select schema_version from public.examtransfer_cloud_meta where id=1),26,
+  'Quiz grading and score-10 invariants remain available at schema 26');
 select has_column('public','quiz_attempts','auto_score','quiz attempts store immutable auto score');
 select has_column('public','quiz_attempts','grading_status','quiz attempts store grading status');
 select has_column('public','quiz_attempts','general_comment','quiz attempts store teacher comment');
@@ -35,9 +35,9 @@ select ok(position('auto_score = v_score' in lower(pg_get_functiondef(
 select ok(position('grading_status = ''graded''' in lower(pg_get_functiondef(
   'public.finalize_public_quiz_attempt(uuid,text)'::regprocedure))) > 0,
   'finalize marks attempt graded');
-select ok(position('v_attempt.returned_at is null' in lower(pg_get_functiondef(
+select ok(position('v_returned := v_attempt.grading_status = ''returned'' and v_attempt.returned_at is not null' in lower(pg_get_functiondef(
   'public.get_public_quiz_attempt_review(uuid)'::regprocedure))) > 0,
-  'review RPC gates correct choices on returned timestamp');
+  'review RPC gates correct choices on Returned state and timestamp');
 select ok(not has_function_privilege('anon',
   'public.get_public_quiz_attempt_review(uuid)','EXECUTE'),
   'anon cannot execute student review');

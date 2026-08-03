@@ -83,7 +83,8 @@ public sealed record StudentRealtimeNotification(
     long Revision,
     TimeExtendedEvent? TimeExtended,
     Guid? ParticipantId = null,
-    PublicCloudProjectionUpdatedEvent? ProjectionUpdated = null);
+    PublicCloudProjectionUpdatedEvent? ProjectionUpdated = null,
+    StudentNotificationEventDto? StudentNotification = null);
 
 public interface ISubmissionRecoveryService : IDisposable
 {

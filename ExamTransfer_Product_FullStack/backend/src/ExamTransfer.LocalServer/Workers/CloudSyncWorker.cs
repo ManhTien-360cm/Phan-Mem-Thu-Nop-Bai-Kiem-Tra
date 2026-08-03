@@ -1,4 +1,5 @@
 ﻿using ExamTransfer.Application;
+using System.Text.Json;
 using ExamTransfer.Domain;
 using ExamTransfer.Infrastructure;
 using ExamTransfer.Infrastructure.Persistence;
@@ -14,6 +15,8 @@ public sealed class CloudSyncWorker(
     ICloudSyncSignal cloudSyncSignal,
     ILogger<CloudSyncWorker> logger) : BackgroundService
 {
+    private static readonly JsonSerializerOptions JsonOptions =
+        new(JsonSerializerDefaults.Web);
     private readonly CloudOptions cloudOptions = options.Value.Cloud;
 
     protected override async Task ExecuteAsync(
@@ -111,6 +114,43 @@ public sealed class CloudSyncWorker(
                         when (stoppingToken.IsCancellationRequested)
                     {
                         throw;
+                    }
+                    catch (ApiException ex)
+                    {
+                        var roomCodeConflict = string.Equals(
+                            ex.Code,
+                            ErrorCodes.RoomCodeConflict,
+                            StringComparison.Ordinal);
+                        item.Status = roomCodeConflict
+                            ? SyncStatus.Conflict
+                            : SyncStatus.Failed;
+                        item.RetryCount++;
+                        item.LastError = JsonSerializer.Serialize(
+                            new CloudSyncFailure(ex.Code, ex.Message),
+                            JsonOptions);
+                        item.LeaseUntilUtc = null;
+                        item.NextRetryAtUtc = roomCodeConflict
+                            ? null
+                            : DateTimeOffset.UtcNow.AddSeconds(
+                                Math.Min(
+                                    3600,
+                                    Math.Pow(
+                                        2,
+                                        Math.Min(item.RetryCount, 10))));
+                        item.CompletedAtUtc = null;
+                        await MarkProjectionStatusAsync(
+                            db,
+                            item,
+                            item.Status,
+                            item.CloudObjectPath,
+                            stoppingToken);
+                        logger.LogWarning(
+                            "Cloud sync rejected for {EntityType}/{EntityId}. Code={Code}; Status={Status}; RetryScheduled={RetryScheduled}",
+                            item.EntityType,
+                            item.EntityId,
+                            ex.Code,
+                            item.Status,
+                            item.NextRetryAtUtc.HasValue);
                     }
                     catch (Exception ex)
                     {

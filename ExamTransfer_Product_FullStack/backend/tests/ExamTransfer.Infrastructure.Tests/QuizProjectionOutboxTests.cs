@@ -151,6 +151,7 @@ public sealed class QuizProjectionOutboxTests
                     id = attemptId,
                     session_id = sessionId,
                     participant_id = participantId,
+                    attempt_number = 1,
                     exam_version = 7,
                     result_policy = "ShowAfterSubmission",
                     status = "Finalized",

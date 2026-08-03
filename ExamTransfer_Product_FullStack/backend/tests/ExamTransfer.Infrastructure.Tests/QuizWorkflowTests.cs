@@ -110,10 +110,12 @@ public sealed class QuizWorkflowTests
 
         var finalized = await service.FinalizeAsync(attempt.Id, participant.Id, new("final-1", DateTimeOffset.UtcNow), default);
         var repeated = await service.FinalizeAsync(attempt.Id, participant.Id, new("final-1", DateTimeOffset.UtcNow), default);
-        Assert.Equal(10m, finalized.Score);
+        Assert.False(finalized.ScoreVisible);
+        Assert.Null(finalized.Score);
         Assert.Equal(10m, finalized.MaxScore);
         Assert.Equal(finalized.Score, repeated.Score);
         Assert.Equal(QuizAttemptStatus.Finalized, finalized.Status);
+        Assert.Equal(10m, (await db.QuizAttemptsSet.SingleAsync(x => x.Id == attempt.Id)).Score);
         await Assert.ThrowsAsync<ApiException>(() => service.SyncAnswersAsync(attempt.Id, participant.Id, new([]), default));
         await Assert.ThrowsAsync<ApiException>(() => service.FinalizeAsync(attempt.Id, Guid.NewGuid(), new("other", DateTimeOffset.UtcNow), default));
 

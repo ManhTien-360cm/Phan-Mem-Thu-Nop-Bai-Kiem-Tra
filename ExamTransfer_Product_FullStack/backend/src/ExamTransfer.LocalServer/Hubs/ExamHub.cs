@@ -1,6 +1,7 @@
 ﻿using System.Security.Claims;
 using ExamTransfer.Application;
 using ExamTransfer.Infrastructure.Persistence;
+using ExamTransfer.Infrastructure.Services;
 using ExamTransfer.LocalServer.Auth;
 using ExamTransfer.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
@@ -10,19 +11,69 @@ using Microsoft.EntityFrameworkCore;
 namespace ExamTransfer.LocalServer.Hubs;
 
 [Authorize(AuthenticationSchemes = ExamTransferAuthSchemes.Account + "," + ExamTransferAuthSchemes.ExamParticipant)]
-public sealed class ExamHub(ISessionService sessions, IControlService control, AppDbContext db) : Hub
+public sealed class ExamHub(
+    ISessionService sessions,
+    IControlService control,
+    AppDbContext db,
+    OnlyLanStudentNotificationDispatcher notificationDispatcher) : Hub
 {
     public static string SessionGroup(Guid id) => $"session:{id:N}";
+    public static string StudentSessionGroup(Guid id) => $"student-session:{id:N}";
     public static string ParticipantGroup(Guid sessionId, Guid participantId) => $"session:{sessionId:N}:participant:{participantId:N}";
 
     public override async Task OnConnectedAsync()
     {
         if (TryIds(out var sessionId, out var participantId))
         {
+            var participantIdentity = Context.User?.Identities.FirstOrDefault(identity =>
+                identity.IsAuthenticated
+                && string.Equals(
+                    identity.AuthenticationType,
+                    ExamTransferAuthSchemes.ExamParticipant,
+                    StringComparison.Ordinal));
+            var claimedDeviceId = participantIdentity?.FindFirst("device_id")?.Value;
+            var claimedUserId = Guid.TryParse(
+                participantIdentity?.FindFirst("user_id")?.Value,
+                out var parsedUserId)
+                ? parsedUserId
+                : Guid.Empty;
+            var participant = await db.SessionParticipantsSet
+                .AsNoTracking()
+                .Include(x => x.Session)
+                .SingleOrDefaultAsync(x => x.Id == participantId && x.SessionId == sessionId, Context.ConnectionAborted);
+            if (participantIdentity is null
+                || !participantIdentity.HasClaim(ClaimTypes.Role, nameof(UserRole.Student))
+                || participant is null
+                || participant.Session.AccessMode != SessionAccessMode.LanOnly
+                || string.IsNullOrWhiteSpace(claimedDeviceId)
+                || !string.Equals(participant.DeviceId, claimedDeviceId, StringComparison.Ordinal)
+                || (participant.UserId.HasValue && participant.UserId.Value != claimedUserId))
+                throw new HubException(ErrorCodes.Unauthorized);
+
             await Groups.AddToGroupAsync(Context.ConnectionId, SessionGroup(sessionId));
+            await Groups.AddToGroupAsync(Context.ConnectionId, StudentSessionGroup(sessionId));
             await Groups.AddToGroupAsync(Context.ConnectionId, ParticipantGroup(sessionId, participantId));
+            Context.Items[typeof(ExamHub)] = (sessionId, participantId);
+            await notificationDispatcher.ReplayAsync(
+                sessionId,
+                participantId,
+                Context.ConnectionId,
+                Context.ConnectionAborted);
         }
         await base.OnConnectedAsync();
+    }
+
+    public override async Task OnDisconnectedAsync(Exception? exception)
+    {
+        if (Context.Items.TryGetValue(typeof(ExamHub), out var value)
+            && value is ValueTuple<Guid, Guid> scope)
+        {
+            await Groups.RemoveFromGroupAsync(Context.ConnectionId, SessionGroup(scope.Item1));
+            await Groups.RemoveFromGroupAsync(Context.ConnectionId, StudentSessionGroup(scope.Item1));
+            await Groups.RemoveFromGroupAsync(Context.ConnectionId, ParticipantGroup(scope.Item1, scope.Item2));
+            Context.Items.Remove(typeof(ExamHub));
+        }
+        await base.OnDisconnectedAsync(exception);
     }
 
     public async Task SubscribeSession(Guid sessionId)
@@ -107,7 +158,9 @@ public sealed class ExamHub(ISessionService sessions, IControlService control, A
         if (sessionId == Guid.Empty
             || !await db.ExamSessionsSet
                 .AsNoTracking()
-                .AnyAsync(x => x.Id == sessionId, Context.ConnectionAborted))
+                .AnyAsync(x => x.Id == sessionId
+                    && x.AccessMode == SessionAccessMode.LanOnly,
+                    Context.ConnectionAborted))
             throw new HubException(ErrorCodes.NotFound);
     }
 

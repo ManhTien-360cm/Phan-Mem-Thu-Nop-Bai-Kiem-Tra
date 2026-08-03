@@ -46,6 +46,12 @@ public sealed class DependencyInjectionResolutionTests
                 scoped.GetRequiredService<ISessionService>());
             Assert.IsType<SubmissionService>(
                 scoped.GetRequiredService<ISubmissionService>());
+            Assert.IsType<SubmissionDownloadDispatcher>(
+                scoped.GetRequiredService<ISubmissionDownloadService>());
+            Assert.IsType<OnlyLanSubmissionDownloadService>(
+                scoped.GetRequiredService<IOnlyLanSubmissionDownloadService>());
+            Assert.IsType<PublicCloudSubmissionDownloadService>(
+                scoped.GetRequiredService<IPublicCloudSubmissionDownloadService>());
             Assert.IsType<ControlService>(
                 scoped.GetRequiredService<IControlService>());
             Assert.IsType<QuizService>(

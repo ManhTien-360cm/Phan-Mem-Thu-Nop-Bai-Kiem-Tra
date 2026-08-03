@@ -1,15 +1,16 @@
 using ExamTransfer.Application;
 using ExamTransfer.Domain;
 using ExamTransfer.Infrastructure.Persistence;
+using ExamTransfer.Infrastructure.Services;
 using ExamTransfer.Shared.Contracts;
+using Microsoft.EntityFrameworkCore;
 
 namespace ExamTransfer.Infrastructure.Execution.OnlyLan;
 
 public sealed class LanSubmissionMutationHandler(
     AppDbContext db,
     IAuditService audit,
-    IOutboxService outbox,
-    IRealtimePublisher realtime) : ISubmissionMutationHandler
+    IOutboxService outbox) : ISubmissionMutationHandler
 {
     public SessionAccessMode AccessMode => SessionAccessMode.LanOnly;
 
@@ -31,7 +32,14 @@ public sealed class LanSubmissionMutationHandler(
         submission.TeacherRejectReason = request.Reason;
         submission.Participant.SubmissionStatus = SubmissionStatus.Rejected;
         submission.Participant.Session.Sequence++;
-        await db.SaveChangesAsync(cancellationToken);
+        OnlyLanStudentNotificationOutbox.Enqueue(
+            db,
+            StudentNotificationEventType.SubmissionRejected,
+            submission.SessionId,
+            submission.Participant.Session.Sequence,
+            participantId: submission.ParticipantId,
+            submissionId: submission.Id,
+            reason: request.Reason);
         await audit.WriteAsync(
             "SubmissionRejected",
             nameof(Submission),
@@ -46,13 +54,6 @@ public sealed class LanSubmissionMutationHandler(
             "upsert",
             SubmissionMutationPayloads.ToCloud(submission),
             cancellationToken: cancellationToken);
-        await realtime.PublishParticipantAsync(
-            submission.SessionId,
-            submission.ParticipantId,
-            RealtimeEvents.SubmissionRejected,
-            submission.Participant.Session.Sequence,
-            new SubmissionRejectedEvent(submission.Id, request.Reason),
-            cancellationToken);
     }
 
     public async Task AllowResubmitAsync(
@@ -60,9 +61,30 @@ public sealed class LanSubmissionMutationHandler(
         AllowResubmitRequest request,
         CancellationToken cancellationToken)
     {
+        var submissionCandidates = await db.SubmissionsSet
+            .Where(x => x.ParticipantId == participant.Id
+                && x.SessionId == participant.SessionId
+                && x.Status == SubmissionStatus.Rejected)
+            .ToListAsync(cancellationToken);
+        var submission = submissionCandidates
+            .OrderByDescending(x => x.AttemptNumber)
+            .ThenByDescending(x => x.CreatedAtUtc)
+            .FirstOrDefault()
+            ?? throw new ApiException(
+                ErrorCodes.InvalidStateTransition,
+                "Không tìm thấy bài bị từ chối để cho phép nộp lại.",
+                409);
         participant.ResubmitAllowed = true;
         participant.ResubmitReason = request.Reason;
-        await db.SaveChangesAsync(cancellationToken);
+        participant.Session.Sequence++;
+        OnlyLanStudentNotificationOutbox.Enqueue(
+            db,
+            StudentNotificationEventType.ResubmitAllowed,
+            participant.SessionId,
+            participant.Session.Sequence,
+            participantId: participant.Id,
+            submissionId: submission.Id,
+            reason: request.Reason);
         await audit.WriteAsync(
             "ResubmitAllowed",
             nameof(SessionParticipant),

@@ -71,11 +71,11 @@ function Test-CidrContainsAddress {
 
     $networkBytes = $networkAddress.GetAddressBytes()
     $minimumPrefix = if ($networkBytes[0] -eq 10) {
-        8
+        9
     } elseif ($networkBytes[0] -eq 172 -and $networkBytes[1] -ge 16 -and $networkBytes[1] -le 31) {
-        12
+        13
     } else {
-        16
+        17
     }
     if ($prefix -lt $minimumPrefix) { return $false }
 

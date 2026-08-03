@@ -1,4 +1,5 @@
 ﻿using ExamTransfer.Application;
+using System.Text.Json;
 using ExamTransfer.Domain;
 using ExamTransfer.Infrastructure;
 using ExamTransfer.Infrastructure.Execution;
@@ -64,6 +65,144 @@ public sealed class CoreWorkflowPersistenceTests
             var archived = await DashboardService(archivedContext).GetDashboardAsync(CancellationToken.None);
             Assert.Equal(initialClassCount, archived.ClassCount);
         }
+    }
+
+    [Fact]
+    public async Task Dashboard_WithNoSessions_ReturnsNullActiveSessionAndEmptyHistory()
+    {
+        await using var database = await FileDatabase.CreateAsync();
+
+        var dashboard = await DashboardService(database.Context).GetDashboardAsync(CancellationToken.None);
+
+        Assert.Null(dashboard.ActiveSession);
+        Assert.Empty(dashboard.RecentSessions);
+    }
+
+    [Theory]
+    [InlineData(SessionStatus.Finished)]
+    [InlineData(SessionStatus.Cancelled)]
+    [InlineData(SessionStatus.Archived)]
+    public async Task Dashboard_TerminalSession_RemainsInHistoryButIsNotActive(SessionStatus status)
+    {
+        await using var database = await FileDatabase.CreateAsync();
+        var session = await SeedDashboardSessionAsync(database.Context, status, DateTimeOffset.UtcNow);
+
+        var dashboard = await DashboardService(database.Context).GetDashboardAsync(CancellationToken.None);
+
+        Assert.Null(dashboard.ActiveSession);
+        Assert.Contains(dashboard.RecentSessions, item => item.Id == session.Id && item.Status == status);
+    }
+
+    [Theory]
+    [InlineData(SessionStatus.Waiting)]
+    [InlineData(SessionStatus.InProgress)]
+    [InlineData(SessionStatus.Paused)]
+    [InlineData(SessionStatus.Collecting)]
+    public async Task Dashboard_ActiveSessionStatus_IsEligible(SessionStatus status)
+    {
+        await using var database = await FileDatabase.CreateAsync();
+        var session = await SeedDashboardSessionAsync(database.Context, status, DateTimeOffset.UtcNow);
+
+        var dashboard = await DashboardService(database.Context).GetDashboardAsync(CancellationToken.None);
+
+        Assert.Equal(session.Id, dashboard.ActiveSession?.Id);
+        Assert.Equal(status, dashboard.ActiveSession?.Status);
+    }
+
+    [Fact]
+    public async Task Dashboard_NewerFinishedSession_DoesNotHideOlderInProgressSession()
+    {
+        await using var database = await FileDatabase.CreateAsync();
+        var inProgress = await SeedDashboardSessionAsync(
+            database.Context,
+            SessionStatus.InProgress,
+            DateTimeOffset.UtcNow.AddMinutes(-10));
+        ExamSession? newestFinished = null;
+        for (var index = 0; index < 5; index++)
+        {
+            newestFinished = await SeedDashboardSessionAsync(
+                database.Context,
+                SessionStatus.Finished,
+                DateTimeOffset.UtcNow.AddMinutes(index - 4));
+        }
+
+        var dashboard = await DashboardService(database.Context).GetDashboardAsync(CancellationToken.None);
+
+        Assert.Equal(newestFinished!.Id, dashboard.RecentSessions[0].Id);
+        Assert.DoesNotContain(dashboard.RecentSessions, item => item.Id == inProgress.Id);
+        Assert.Equal(inProgress.Id, dashboard.ActiveSession?.Id);
+    }
+
+    [Fact]
+    public async Task Dashboard_MultipleActiveSessions_UsesExistingRecentSortOrder()
+    {
+        await using var database = await FileDatabase.CreateAsync();
+        var older = await SeedDashboardSessionAsync(
+            database.Context,
+            SessionStatus.Waiting,
+            DateTimeOffset.UtcNow.AddMinutes(-10));
+        var newer = await SeedDashboardSessionAsync(
+            database.Context,
+            SessionStatus.Paused,
+            DateTimeOffset.UtcNow);
+
+        var dashboard = await DashboardService(database.Context).GetDashboardAsync(CancellationToken.None);
+
+        Assert.Equal(newer.Id, dashboard.RecentSessions[0].Id);
+        Assert.Equal(older.Id, dashboard.RecentSessions[1].Id);
+        Assert.Equal(newer.Id, dashboard.ActiveSession?.Id);
+    }
+
+    [Fact]
+    public async Task Dashboard_FinishedDeadline_DoesNotDetermineActiveSession()
+    {
+        await using var database = await FileDatabase.CreateAsync();
+        var pastDeadline = await SeedDashboardSessionAsync(
+            database.Context,
+            SessionStatus.Finished,
+            DateTimeOffset.UtcNow.AddMinutes(-5),
+            DateTimeOffset.UtcNow.AddHours(-2));
+        var futureDeadline = await SeedDashboardSessionAsync(
+            database.Context,
+            SessionStatus.Finished,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow.AddHours(2));
+
+        var dashboard = await DashboardService(database.Context).GetDashboardAsync(CancellationToken.None);
+
+        Assert.Null(dashboard.ActiveSession);
+        Assert.Contains(dashboard.RecentSessions, item => item.Id == pastDeadline.Id);
+        Assert.Contains(dashboard.RecentSessions, item => item.Id == futureDeadline.Id);
+    }
+
+    [Fact]
+    public void DashboardContract_IsAdditiveAndPreservesRecentSessions()
+    {
+        var session = DashboardSessionSummary(SessionStatus.InProgress);
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var legacyJson = JsonSerializer.Serialize(
+            new
+            {
+                classCount = 1,
+                examCount = 1,
+                activeSessionCount = 1,
+                pendingGradingCount = 0,
+                storageBytes = 0,
+                recentSessions = new[] { session },
+                warnings = Array.Empty<string>()
+            },
+            options);
+
+        var fromLegacyPayload = JsonSerializer.Deserialize<DashboardSummaryDto>(legacyJson, options);
+        var roundTrip = JsonSerializer.Deserialize<DashboardSummaryDto>(
+            JsonSerializer.Serialize(fromLegacyPayload! with { ActiveSession = session }, options),
+            options);
+
+        Assert.NotNull(fromLegacyPayload);
+        Assert.Null(fromLegacyPayload.ActiveSession);
+        Assert.Equal(session.Id, Assert.Single(fromLegacyPayload.RecentSessions).Id);
+        Assert.Equal(session.Id, roundTrip?.ActiveSession?.Id);
+        Assert.Equal(session.Id, Assert.Single(roundTrip!.RecentSessions).Id);
     }
 
     [Fact]
@@ -1033,11 +1172,15 @@ public sealed class CoreWorkflowPersistenceTests
         var outboxCall = Assert.Single(outbox.Calls);
         Assert.Equal("submissions", outboxCall.EntityType);
         Assert.Equal(seeded.Submission.Id.ToString(), outboxCall.EntityId);
-        var published = Assert.Single(realtime.ParticipantEvents);
-        Assert.Equal(RealtimeEvents.SubmissionRejected, published.EventName);
-        var payload = Assert.IsType<SubmissionRejectedEvent>(published.Payload);
-        Assert.Equal(seeded.Submission.Id, payload.SubmissionId);
-        Assert.Equal("Unreadable archive", payload.Reason);
+        Assert.Empty(realtime.ParticipantEvents);
+        var notificationOutbox = await database.Context.SyncQueueSet.SingleAsync(
+            x => x.EntityType == OnlyLanStudentNotificationOutbox.EntityType);
+        Assert.Equal(SyncStatus.LocalOnly, notificationOutbox.Status);
+        using var notificationJson = JsonDocument.Parse(notificationOutbox.PayloadJson);
+        Assert.Equal("SubmissionRejected", notificationJson.RootElement.GetProperty("eventType").GetString());
+        Assert.Equal(seeded.Submission.Id, notificationJson.RootElement.GetProperty("submissionId").GetGuid());
+        Assert.Equal(seeded.Participant.Id, notificationJson.RootElement.GetProperty("participantId").GetGuid());
+        Assert.Equal("Unreadable archive", notificationJson.RootElement.GetProperty("reason").GetString());
         Assert.Contains(
             await database.Context.AuditLogsSet.ToListAsync(),
             x => x.Action == "SubmissionRejected"
@@ -1082,6 +1225,10 @@ public sealed class CoreWorkflowPersistenceTests
         Assert.Equal("session_participants", outboxCall.EntityType);
         Assert.Equal(seeded.Participant.Id.ToString(), outboxCall.EntityId);
         Assert.Empty(realtime.ParticipantEvents);
+        var resubmitNotification = await database.Context.SyncQueueSet.SingleAsync(
+            x => x.EntityType == OnlyLanStudentNotificationOutbox.EntityType);
+        Assert.Contains("\"eventType\":\"ResubmitAllowed\"", resubmitNotification.PayloadJson, StringComparison.Ordinal);
+        Assert.Contains(seeded.Submission.Id.ToString(), resubmitNotification.PayloadJson, StringComparison.OrdinalIgnoreCase);
         Assert.Contains(
             await database.Context.AuditLogsSet.ToListAsync(),
             x => x.Action == "ResubmitAllowed"
@@ -1272,8 +1419,7 @@ public sealed class CoreWorkflowPersistenceTests
                 new LanSubmissionMutationHandler(
                     db,
                     audit,
-                    outbox,
-                    realtime),
+                    outbox),
                 new PublicCloudSubmissionMutationHandler(cloud)
             });
         return new SubmissionService(
@@ -1346,6 +1492,57 @@ public sealed class CoreWorkflowPersistenceTests
         await db.SaveChangesAsync();
         return new(exam, session, participant, submission);
     }
+
+    private static async Task<ExamSession> SeedDashboardSessionAsync(
+        AppDbContext db,
+        SessionStatus status,
+        DateTimeOffset updatedAtUtc,
+        DateTimeOffset? startedAtUtc = null)
+    {
+        var exam = new Exam
+        {
+            Title = $"Dashboard {status}",
+            Subject = "Dashboard",
+            DurationMinutes = 60,
+            Status = ExamStatus.Published,
+            Version = 1
+        };
+        var session = new ExamSession
+        {
+            Exam = exam,
+            ExamId = exam.Id,
+            RoomCode = $"DASH-{Guid.NewGuid():N}",
+            HostDeviceId = "dashboard-test",
+            Status = status,
+            StartedAtUtc = startedAtUtc,
+            EndedAtUtc = status is SessionStatus.Finished or SessionStatus.Cancelled
+                ? DateTimeOffset.UtcNow
+                : null
+        };
+        db.Add(session);
+        await db.SaveChangesAsync();
+        await db.Database.ExecuteSqlRawAsync(
+            """UPDATE "exam_sessions" SET "UpdatedAtUtc" = {0} WHERE "Id" = {1};""",
+            updatedAtUtc,
+            session.Id);
+        db.ChangeTracker.Clear();
+        return session;
+    }
+
+    private static SessionSummaryDto DashboardSessionSummary(SessionStatus status) =>
+        new(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            "Dashboard contract",
+            "DASH-CONTRACT",
+            status,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow.AddMinutes(-5),
+            null,
+            DateTimeOffset.UtcNow.AddMinutes(55),
+            new SessionCountsDto(1, 0, 1, 1, 0, 0, 0),
+            1,
+            "row-version");
 
     private static SystemService DashboardService(AppDbContext db)
     {

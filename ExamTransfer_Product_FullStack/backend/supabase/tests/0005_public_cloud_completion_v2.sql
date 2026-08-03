@@ -1,8 +1,8 @@
 begin;
 select plan(14);
 
-select is((select schema_version from public.examtransfer_cloud_meta where id=1), 23,
-  'cloud schema compatibility version includes tenant-compatible OpenRequest');
+select is((select schema_version from public.examtransfer_cloud_meta where id=1), 26,
+  'cloud schema compatibility version includes A-10 student results');
 select has_function('public', 'verify_public_submission_archive',
   array['uuid','uuid','text','bigint','text'], 'transactional archive verification RPC exists');
 select has_function('public', 'get_public_exam_file_download',

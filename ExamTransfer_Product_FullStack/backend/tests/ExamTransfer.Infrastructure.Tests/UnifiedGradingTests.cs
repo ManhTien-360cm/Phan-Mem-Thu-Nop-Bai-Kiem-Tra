@@ -16,7 +16,7 @@ namespace ExamTransfer.Infrastructure.Tests;
 public sealed class UnifiedGradingTests
 {
     [Fact]
-    public async Task SqliteUpgrade_BackfillsExistingFinalizedAttemptAndAdvancesSchema10()
+    public async Task SqliteUpgrade_BackfillsExistingFinalizedAttemptAndAdvancesSchema12()
     {
         await using var fixture = await Fixture.CreateAsync();
         await fixture.Db.Database.ExecuteSqlRawAsync(
@@ -40,12 +40,12 @@ public sealed class UnifiedGradingTests
         Assert.Equal(GradingStatus.Graded, upgraded.GradingStatus);
         Assert.Equal(upgraded.FinalizedAtUtc, upgraded.GradedAtUtc);
         Assert.Equal(
-            "\"10\"",
+            "\"12\"",
             (await fixture.Db.AppSettingsSet.SingleAsync(x => x.Key == "schema.version")).ValueJson);
     }
 
     [Fact]
-    public async Task QuizGrade_OverrideReturnMaskAndReopen_PreserveAutoScoreAndEmitEvent()
+    public async Task QuizGrade_AuthoritativeSaveReturnAndReopen_AreIdempotentAndEmitEvents()
     {
         await using var fixture = await Fixture.CreateAsync();
         var service = fixture.QuizGrades;
@@ -61,46 +61,52 @@ public sealed class UnifiedGradingTests
         Assert.Null(hidden.Score);
         Assert.All(hidden.Questions.SelectMany(x => x.Choices), x => Assert.Null(x.Correct));
 
+        var saveRequestId = Guid.NewGuid();
         var keepAuto = await service.SaveAsync(
             attempt.Id,
-            new(null, "Nhận xét", teacher.RowVersion),
+            new(null, "Nhận xét", teacher.RowVersion, saveRequestId),
             fixture.TeacherId,
             "org-a",
             default);
-        Assert.Equal(8m, keepAuto.Score);
-        var overridden = await service.SaveAsync(
+        Assert.Equal(10m, keepAuto.AutoScore);
+        Assert.Equal(10m, keepAuto.Score);
+        var saveRetry = await service.SaveAsync(
             attempt.Id,
-            new(7.5m, "Điều chỉnh", keepAuto.RowVersion),
+            new(null, "Nhận xét", teacher.RowVersion, saveRequestId),
             fixture.TeacherId,
             "org-a",
             default);
-        Assert.Equal(8m, overridden.AutoScore);
-        Assert.Equal(7.5m, overridden.Score);
+        Assert.Equal(keepAuto.RowVersion, saveRetry.RowVersion);
+        Assert.Equal(keepAuto.Score, saveRetry.Score);
         await Assert.ThrowsAsync<ApiException>(() => service.SaveAsync(
             attempt.Id,
-            new(10.01m, null, overridden.RowVersion),
+            new(7.5m, null, keepAuto.RowVersion),
             fixture.TeacherId,
             "org-a",
             default));
         await Assert.ThrowsAsync<ApiException>(() => service.SaveAsync(
             attempt.Id,
-            new(7m, null, teacher.RowVersion),
+            new(10m, null, teacher.RowVersion),
             fixture.TeacherId,
             "org-a",
             default));
 
+        var returnRequestId = Guid.NewGuid();
         var returned = await service.ReturnAsync(
             attempt.Id,
-            new("Đã công bố", overridden.RowVersion),
+            new("Đã công bố", keepAuto.RowVersion, returnRequestId),
             fixture.TeacherId,
             "org-a",
             default);
         Assert.Equal(GradingStatus.Returned, returned.Status);
-        Assert.Single(fixture.Realtime.Events);
+        Assert.Empty(fixture.Realtime.Events);
+        Assert.Single(await fixture.Db.SyncQueueSet
+            .Where(x => x.EntityType == OnlyLanStudentNotificationOutbox.EntityType)
+            .ToListAsync());
         var visible = await service.GetStudentReviewAsync(attempt.Id, fixture.Participant.Id, default);
         Assert.True(visible.ScoreVisible);
         Assert.True(visible.CorrectAnswersVisible);
-        Assert.Equal(7.5m, visible.Score);
+        Assert.Equal(10m, visible.Score);
         Assert.Contains(visible.Questions.SelectMany(x => x.Choices), x => x.Correct == true);
         await Assert.ThrowsAsync<ApiException>(() => service.SaveAsync(
             attempt.Id,
@@ -109,18 +115,33 @@ public sealed class UnifiedGradingTests
             "org-a",
             default));
 
-        var reopened = await service.ReopenAsync(
+        var returnRetry = await service.ReturnAsync(
             attempt.Id,
-            new("Rà soát lại", returned.RowVersion),
+            new("Đã công bố", keepAuto.RowVersion, returnRequestId),
             fixture.TeacherId,
             "org-a",
             default);
-        Assert.Equal(GradingStatus.InProgress, reopened.Status);
+        Assert.Equal(returned.RowVersion, returnRetry.RowVersion);
+        Assert.Single(await fixture.Db.SyncQueueSet
+            .Where(x => x.EntityType == OnlyLanStudentNotificationOutbox.EntityType)
+            .ToListAsync());
+
+        var reopenRequestId = Guid.NewGuid();
+        var reopened = await service.ReopenAsync(
+            attempt.Id,
+            new("Rà soát lại", returned.RowVersion, reopenRequestId),
+            fixture.TeacherId,
+            "org-a",
+            default);
+        Assert.Equal(GradingStatus.Graded, reopened.Status);
+        Assert.Equal(2, await fixture.Db.SyncQueueSet.CountAsync(
+            x => x.EntityType == OnlyLanStudentNotificationOutbox.EntityType));
         var maskedAgain = await service.GetStudentReviewAsync(attempt.Id, fixture.Participant.Id, default);
         Assert.False(maskedAgain.ScoreVisible);
         Assert.False(maskedAgain.CorrectAnswersVisible);
         Assert.True(await fixture.Db.AuditLogsSet.AnyAsync(x => x.Action == "QuizGradeReturned"));
         Assert.True(await fixture.Db.SyncQueueSet.AnyAsync(x => x.EntityType == "quiz_attempts"));
+        Assert.Equal(3, await fixture.Db.QuizGradeMutationReceiptsSet.CountAsync());
     }
 
     [Fact]
@@ -138,14 +159,14 @@ public sealed class UnifiedGradingTests
 
         Assert.Contains(page.Items, x => x.Type == GradingWorkItemType.FileSubmission && x.Id == fixture.Submission.Id);
         Assert.Contains(page.Items, x => x.Type == GradingWorkItemType.QuizAttempt && x.Id == fixture.Attempt.Id);
-        var otherTenant = await fixture.QuizGrades.GetWorkItemsAsync(
+        var workItemsError = await Assert.ThrowsAsync<ApiException>(() => fixture.QuizGrades.GetWorkItemsAsync(
             null,
             1,
             100,
             fixture.TeacherId,
             "org-b",
-            default);
-        Assert.Empty(otherTenant.Items);
+            default));
+        Assert.Equal(403, workItemsError.StatusCode);
         var error = await Assert.ThrowsAsync<ApiException>(() => fixture.QuizGrades.GetAsync(
             fixture.Attempt.Id,
             fixture.TeacherId,
@@ -228,8 +249,7 @@ public sealed class UnifiedGradingTests
             QuizGrades = new(
                 db,
                 new AuditService(db, new HttpContextAccessor()),
-                new OutboxService(db),
-                realtime);
+                new OutboxService(db));
         }
 
         public AppDbContext Db { get; }

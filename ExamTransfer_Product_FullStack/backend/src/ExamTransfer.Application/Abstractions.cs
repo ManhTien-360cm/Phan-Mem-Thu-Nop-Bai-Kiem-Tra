@@ -167,10 +167,39 @@ public interface IRealtimePublisher
     Task PublishParticipantAsync<T>(Guid sessionId, Guid participantId, string eventName, long sequence, T payload, CancellationToken cancellationToken = default);
 }
 
+public interface IOnlyLanStudentNotificationTransport
+{
+    Task PublishSessionAsync(StudentNotificationEventDto notification, CancellationToken cancellationToken = default);
+    Task PublishParticipantAsync(StudentNotificationEventDto notification, CancellationToken cancellationToken = default);
+    Task PublishConnectionAsync(string connectionId, StudentNotificationEventDto notification, CancellationToken cancellationToken = default);
+}
+
 public interface ILanAccessPolicy
 {
     bool IsAllowed(string? remoteAddress);
+
+    LanAccessDecision Evaluate(string? remoteAddress)
+    {
+        var allowed = IsAllowed(remoteAddress);
+        return new(
+            allowed,
+            "Unknown",
+            remoteAddress,
+            remoteAddress,
+            [],
+            null,
+            allowed ? "ALLOWED" : "DENIED");
+    }
 }
+
+public sealed record LanAccessDecision(
+    bool Allowed,
+    string RuntimeMode,
+    string? RemoteIp,
+    string? EffectiveClientIp,
+    IReadOnlyList<string> AllowedCidrs,
+    string? MatchedRange,
+    string DeniedReason);
 
 public interface IAuditService
 {
@@ -196,6 +225,8 @@ public sealed record CloudProjectionReadiness(
     string Code,
     string Message,
     int RetryCount);
+
+public sealed record CloudSyncFailure(string Code, string Message);
 
 public interface ICloudAdapter
 {
@@ -255,6 +286,14 @@ public interface ICloudAdapter
         Guid requestId,
         CancellationToken cancellationToken) =>
         throw new NotSupportedException("PublicCloud teacher mutations are not supported by this adapter.");
+    Task<MessageDto> SendPublicTeacherMessageAsync(
+        Guid sessionId,
+        Guid? participantId,
+        MessageType messageType,
+        string content,
+        Guid requestId,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("PublicCloud teacher messages are not supported by this adapter.");
     Task<CloudEnrollmentMutationResult> ApprovePublicEnrollmentAsync(
         Guid enrollmentRequestId,
         Guid requestId,
@@ -288,10 +327,42 @@ public interface ICloudAdapter
         Guid requestId,
         CancellationToken cancellationToken) =>
         throw new NotSupportedException("PublicCloud quiz grading is not supported by this adapter.");
+    Task<CloudEssayGradeResult> GetPublicEssayGradeAsync(
+        Guid submissionId,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("PublicCloud essay grading is not supported by this adapter.");
+    Task<CloudEssayGradeResult> SavePublicEssayGradeAsync(
+        Guid submissionId,
+        decimal? score,
+        IReadOnlyList<RubricScoreDto> rubricScores,
+        string? generalComment,
+        long expectedCloudVersion,
+        Guid requestId,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("PublicCloud essay grading is not supported by this adapter.");
+    Task<CloudEssayGradeResult> ReturnPublicEssayGradeAsync(
+        Guid submissionId,
+        string? message,
+        long expectedCloudVersion,
+        Guid requestId,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("PublicCloud essay grading is not supported by this adapter.");
+    Task<CloudEssayGradeResult> ReopenPublicEssayGradeAsync(
+        Guid submissionId,
+        string reason,
+        long expectedCloudVersion,
+        Guid requestId,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("PublicCloud essay grading is not supported by this adapter.");
     Task<CloudLoginResult> LoginAsync(string email, string password, CancellationToken cancellationToken);
     Task<CloudLoginResult?> RefreshSessionAsync(CancellationToken cancellationToken);
     Task LogoutAsync(CancellationToken cancellationToken);
     Task<IReadOnlyList<CloudBackupDescriptor>> ListBackupsAsync(CancellationToken cancellationToken);
+    Task DownloadObjectToAsync(
+        string cloudObjectPath,
+        Stream destination,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("Cloud object streaming is not supported by this adapter.");
     Task DownloadObjectAsync(string cloudObjectPath, string destinationPath, CancellationToken cancellationToken);
 }
 
@@ -365,6 +436,31 @@ public sealed record CloudQuizGradeMutationResult(
     DateTimeOffset? ReturnedAtUtc,
     long CloudVersion,
     DateTimeOffset UpdatedAtUtc);
+
+public sealed record CloudGradeAttachmentResult(
+    Guid Id,
+    string Name,
+    long SizeBytes,
+    string Sha256,
+    string MimeType);
+
+public sealed record CloudEssayGradeResult(
+    Guid? GradeId,
+    Guid SubmissionId,
+    Guid SessionId,
+    Guid ParticipantId,
+    decimal? Score,
+    decimal MaxScore,
+    GradingStatus Status,
+    string? GeneralComment,
+    Guid? GraderId,
+    DateTimeOffset? GradedAtUtc,
+    DateTimeOffset? ReturnedAtUtc,
+    long Revision,
+    long CloudVersion,
+    DateTimeOffset UpdatedAtUtc,
+    IReadOnlyList<RubricScoreDto> RubricScores,
+    IReadOnlyList<CloudGradeAttachmentResult> Attachments);
 
 public sealed record CloudPreflightResult(
     bool Enabled,
@@ -443,6 +539,7 @@ public interface ISessionService
     Task<SessionDetailDto> CreateAndOpenAsync(CreateSessionRequest request, string hostDeviceId, CancellationToken cancellationToken);
     Task<CloudProjectionReadiness> GetProjectionReadinessAsync(Guid id, CancellationToken cancellationToken);
     Task<CloudProjectionReadiness> RetryProjectionAsync(Guid id, CancellationToken cancellationToken);
+    Task<SessionDetailDto> ChangePublicCloudRoomCodeAsync(Guid id, ChangePublicCloudRoomCodeRequest request, CancellationToken cancellationToken);
     Task<SessionDetailDto> UpdateAsync(Guid id, UpdateSessionRequest request, CancellationToken cancellationToken);
     Task<SessionDetailDto> TransitionAsync(Guid id, SessionStatus target, EndSessionRequest? endRequest, CancellationToken cancellationToken);
     Task<BulkArchiveResultDto> BulkArchiveAsync(BulkArchiveRequest request, CancellationToken cancellationToken);
@@ -467,18 +564,48 @@ public interface ISubmissionService
     Task<SubmissionSummaryDto> GetAsync(Guid submissionId, CancellationToken cancellationToken);
     Task RejectAsync(Guid submissionId, RejectSubmissionRequest request, CancellationToken cancellationToken);
     Task AllowResubmitAsync(Guid participantId, AllowResubmitRequest request, CancellationToken cancellationToken);
-    Task<(string Path, string MimeType, string DownloadName)> GetFileAsync(Guid submissionId, Guid fileId, CancellationToken cancellationToken);
 }
+
+public sealed record SubmissionDownloadContent(
+    Stream Content,
+    string MimeType,
+    string DownloadName);
+
+public interface ISubmissionDownloadService
+{
+    Task<SubmissionDownloadContent> OpenAsync(
+        Guid submissionId,
+        Guid fileId,
+        Guid actorId,
+        string? actorOrganizationId,
+        string? traceId,
+        CancellationToken cancellationToken);
+}
+
+public interface IOnlyLanSubmissionDownloadService : ISubmissionDownloadService;
+
+public interface IPublicCloudSubmissionDownloadService : ISubmissionDownloadService;
 
 public interface IGradeService
 {
     Task<PagedResult<SubmissionSummaryDto>> GetQueueAsync(GradingStatus? status, int page, int pageSize, CancellationToken cancellationToken);
     Task<GradeDto> GetAsync(Guid submissionId, CancellationToken cancellationToken);
-    Task<GradeDto> SaveAsync(Guid submissionId, SaveGradeRequest request, CancellationToken cancellationToken);
-    Task<GradeDto> ReturnAsync(Guid submissionId, ReturnGradeRequest request, CancellationToken cancellationToken);
-    Task<GradeDto> ReopenAsync(Guid submissionId, ReopenGradeRequest request, CancellationToken cancellationToken);
-    Task<FileDescriptorDto> AddAttachmentAsync(Guid submissionId, string fileName, string mimeType, Stream content, long contentLength, CancellationToken cancellationToken);
+    Task<GradeDto> GetTeacherAsync(Guid submissionId, Guid actorId, string? actorOrganizationId, CancellationToken cancellationToken);
+    Task<GradeDto> SaveAsync(Guid submissionId, SaveGradeRequest request, Guid actorId, string? actorOrganizationId, CancellationToken cancellationToken);
+    Task<GradeDto> ReturnAsync(Guid submissionId, ReturnGradeRequest request, Guid actorId, string? actorOrganizationId, CancellationToken cancellationToken);
+    Task<GradeDto> ReopenAsync(Guid submissionId, ReopenGradeRequest request, Guid actorId, string? actorOrganizationId, CancellationToken cancellationToken);
+    Task<FileDescriptorDto> AddAttachmentAsync(Guid submissionId, string fileName, string mimeType, Stream content, long contentLength, Guid actorId, string? actorOrganizationId, CancellationToken cancellationToken);
     Task<byte[]> ExportGradebookCsvAsync(Guid? sessionId, CancellationToken cancellationToken);
+}
+
+public interface IStudentResultService
+{
+    Task<StudentResultPageDto> GetReturnedAsync(
+        Guid actorId,
+        string? actorOrganizationId,
+        int pageSize,
+        StudentResultCursorDto? cursor,
+        CancellationToken cancellationToken);
 }
 
 public interface IQuizGradingService

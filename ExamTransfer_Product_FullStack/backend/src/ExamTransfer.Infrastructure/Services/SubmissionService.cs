@@ -297,14 +297,6 @@ public sealed class SubmissionService(AppDbContext db, IStoragePaths paths, IChu
             cancellationToken);
     }
 
-    public async Task<(string Path, string MimeType, string DownloadName)> GetFileAsync(Guid submissionId, Guid fileId, CancellationToken cancellationToken)
-    {
-        var file = await db.SubmissionFilesSet.AsNoTracking().FirstOrDefaultAsync(x => x.Id == fileId && x.SubmissionId == submissionId && x.TransferStatus == TransferStatus.Completed, cancellationToken) ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy file.", 404);
-        var full = Path.GetFullPath(Path.Combine(paths.RootPath, file.RelativePath));
-        if (!full.StartsWith(Path.GetFullPath(paths.RootPath), StringComparison.OrdinalIgnoreCase) || !File.Exists(full)) throw new ApiException(ErrorCodes.NotFound, "File vật lý không tồn tại.", 404);
-        return (full, file.MimeType, file.OriginalName);
-    }
-
     private InitSubmissionResponse ToInitResponse(Submission s) => new(s.Id, s.AttemptNumber, _options.Transfer.ChunkSizeBytes, s.Files.Select(f => new ChunkPlanDto(f.Id, f.TotalChunks, Enumerable.Range(0, f.TotalChunks).Except(chunks.ReadReceivedChunks(f.ReceivedChunksJson)).ToList())).ToList(), s.DeadlineUtc);
     private SubmissionSummaryDto ToSummary(Submission s) => new(s.Id, s.SessionId, s.ParticipantId, s.Participant.StudentCode, s.Participant.DisplayName, s.AttemptNumber, s.Status, s.ClientSubmittedAtUtc, s.ServerReceivedAtUtc, s.DeadlineUtc, s.IsLate, s.ReceiptCode, s.IsOfficial, s.Files.Select(f => f.ToDto(chunks.ReadReceivedChunks(f.ReceivedChunksJson))).ToList());
     private static FileDescriptorDto ToDescriptor(SubmissionFile f) => new(f.Id, f.OriginalName, f.SizeBytes, f.Sha256, f.MimeType, $"/api/v1/submissions/{f.SubmissionId}/files/{f.Id}/content");

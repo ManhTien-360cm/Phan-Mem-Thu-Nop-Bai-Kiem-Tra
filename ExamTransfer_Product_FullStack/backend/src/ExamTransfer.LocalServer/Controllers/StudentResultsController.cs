@@ -4,14 +4,52 @@ using ExamTransfer.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Security.Claims;
 
 namespace ExamTransfer.LocalServer.Controllers;
 
 [Route("api/v1/student")]
-[Authorize(Policy = "StudentWithParticipant")]
-public sealed class StudentResultsController(IGradeService grades, ISubmissionService submissions, AppDbContext db, IStoragePaths paths) : ApiControllerBase
+public sealed class StudentResultsController(
+    IStudentResultService results,
+    IGradeService grades,
+    ISubmissionService submissions,
+    AppDbContext db,
+    IStoragePaths paths) : ApiControllerBase
 {
+    [HttpGet("results")]
+    [Authorize(Policy = "Student")]
+    public async Task<ActionResult<ApiResponse<StudentResultPageDto>>> Results(
+        [FromQuery] int pageSize = 50,
+        [FromQuery] DateTimeOffset? cursorReturnedAtUtc = null,
+        [FromQuery] StudentResultType? cursorResultType = null,
+        [FromQuery] Guid? cursorResultId = null,
+        CancellationToken ct = default)
+    {
+        if ((cursorReturnedAtUtc.HasValue || cursorResultType.HasValue || cursorResultId.HasValue)
+            && (!cursorReturnedAtUtc.HasValue || !cursorResultType.HasValue || !cursorResultId.HasValue))
+        {
+            throw new ApiException(ErrorCodes.ValidationFailed, "Cursor kết quả không đầy đủ.");
+        }
+        var cursor = cursorReturnedAtUtc.HasValue
+            ? new StudentResultCursorDto
+            {
+                ReturnedAtUtc = cursorReturnedAtUtc.Value,
+                ResultType = cursorResultType!.Value,
+                ResultId = cursorResultId!.Value
+            }
+            : null;
+        var actorId = RequiredGuidClaim(ClaimTypes.NameIdentifier);
+        var page = await results.GetReturnedAsync(
+            actorId,
+            User.FindFirst("organization_id")?.Value,
+            pageSize,
+            cursor,
+            ct);
+        return Data(page);
+    }
+
     [HttpGet("submissions/{submissionId:guid}/grade")]
+    [Authorize(Policy = "StudentWithParticipant")]
     public async Task<ActionResult<ApiResponse<GradeDto>>> Grade(Guid submissionId, CancellationToken ct)
     {
         var submission = await submissions.GetAsync(submissionId, ct);
@@ -30,6 +68,7 @@ public sealed class StudentResultsController(IGradeService grades, ISubmissionSe
     }
 
     [HttpGet("submissions/{submissionId:guid}/grade/attachments/{attachmentId:guid}/content")]
+    [Authorize(Policy = "StudentWithParticipant")]
     public async Task<IActionResult> Attachment(Guid submissionId, Guid attachmentId, CancellationToken ct)
     {
         var submission = await submissions.GetAsync(submissionId, ct);

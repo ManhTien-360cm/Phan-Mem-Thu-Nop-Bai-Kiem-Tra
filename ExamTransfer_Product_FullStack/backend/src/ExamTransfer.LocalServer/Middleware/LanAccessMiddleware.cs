@@ -16,16 +16,25 @@ public sealed class LanAccessMiddleware(RequestDelegate next, ILogger<LanAccessM
                 .Where(x => x.Id == sessionId)
                 .Select(x => (SessionAccessMode?)x.AccessMode)
                 .FirstOrDefaultAsync(context.RequestAborted);
-            if (accessMode == SessionAccessMode.LanOnly
-                && !policy.IsAllowed(context.Connection.RemoteIpAddress?.ToString()))
+            if (accessMode == SessionAccessMode.LanOnly)
             {
-                logger.LogWarning(
-                    "LAN request denied. RemoteIp={RemoteIp}; Method={Method}; Path={Path}; TraceId={TraceId}",
-                    context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
-                    context.Request.Method,
-                    context.Request.Path.Value,
-                    context.TraceIdentifier);
-                throw new ApiException(ErrorCodes.LanAccessDenied, "Thiết bị không nằm trong mạng nội bộ được phép của phòng thi.", 403);
+                var decision = policy.Evaluate(context.Connection.RemoteIpAddress?.ToString());
+                if (!decision.Allowed)
+                {
+                    logger.LogWarning(
+                        "LAN request denied. RuntimeMode={RuntimeMode}; RemoteIp={RemoteIp}; EffectiveClientIp={EffectiveClientIp}; AllowedCidrs={AllowedCidrs}; MatchedRange={MatchedRange}; DeniedReason={DeniedReason}; SessionId={SessionId}; Method={Method}; Path={Path}; TraceId={TraceId}",
+                        decision.RuntimeMode,
+                        decision.RemoteIp ?? "unknown",
+                        decision.EffectiveClientIp ?? "unknown",
+                        decision.AllowedCidrs.Count == 0 ? "<none>" : string.Join(',', decision.AllowedCidrs),
+                        decision.MatchedRange ?? "<none>",
+                        decision.DeniedReason,
+                        sessionId,
+                        context.Request.Method,
+                        context.Request.Path.Value,
+                        context.TraceIdentifier);
+                    throw new ApiException(ErrorCodes.LanAccessDenied, "Thiết bị không nằm trong mạng nội bộ được phép của phòng thi.", 403);
+                }
             }
         }
 

@@ -483,6 +483,7 @@ public sealed class PublicCloudPullWorker(
                 if (db.Entry(entity).State == EntityState.Detached) db.QuizAttemptsSet.Add(entity);
                 entity.SessionId = GuidValue(row, "session_id");
                 entity.ParticipantId = GuidValue(row, "participant_id");
+                entity.AttemptNumber = IntValue(row, "attempt_number");
                 entity.ExamVersion = IntValue(row, "exam_version");
                 entity.Status = incomingStatus;
                 entity.StartedAtUtc = DateValue(row, "started_at", record.UpdatedAtUtc);

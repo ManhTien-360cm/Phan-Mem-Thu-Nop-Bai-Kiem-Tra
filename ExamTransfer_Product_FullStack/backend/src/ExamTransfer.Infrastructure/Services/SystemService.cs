@@ -12,6 +12,14 @@ namespace ExamTransfer.Infrastructure.Services;
 
 public sealed class SystemService(AppDbContext db, IStoragePaths paths, ICloudAdapter cloud, IOptions<ExamTransferOptions> options, IRealtimePublisher realtime) : ISystemService
 {
+    private static readonly SessionStatus[] ActiveSessionStatuses =
+    [
+        SessionStatus.Waiting,
+        SessionStatus.InProgress,
+        SessionStatus.Paused,
+        SessionStatus.Collecting
+    ];
+
     private readonly ExamTransferOptions _options = options.Value;
     private const string SettingsKey = "runtime.settings";
 
@@ -58,37 +66,77 @@ public sealed class SystemService(AppDbContext db, IStoragePaths paths, ICloudAd
     {
         var classes = await db.ClassesSet.CountAsync(x => x.Status == ClassStatus.Active, cancellationToken);
         var exams = await db.ExamsSet.CountAsync(x => x.Status != ExamStatus.Archived, cancellationToken);
-        var active = await db.ExamSessionsSet.CountAsync(x => x.Status == SessionStatus.Waiting || x.Status == SessionStatus.InProgress || x.Status == SessionStatus.Paused || x.Status == SessionStatus.Collecting, cancellationToken);
+        var active = await db.ExamSessionsSet.CountAsync(x => ActiveSessionStatuses.Contains(x.Status), cancellationToken);
         var pending = await db.SubmissionsSet.CountAsync(x => x.IsOfficial && (x.Status == SubmissionStatus.Submitted || x.Status == SubmissionStatus.LateSubmitted) && !db.GradesSet.Any(g => g.SubmissionId == x.Id), cancellationToken);
         var recentKeys = await db.ExamSessionsSet
             .AsNoTracking()
-            .Select(x => new { x.Id, x.UpdatedAtUtc })
+            .Select(x => new { x.Id, x.Status, x.UpdatedAtUtc })
             .ToListAsync(cancellationToken);
-        var recentIds = recentKeys
+        var orderedSessionKeys = recentKeys
             .OrderByDescending(x => x.UpdatedAtUtc)
             .ThenByDescending(x => x.Id)
+            .ToList();
+        var recentIds = orderedSessionKeys
             .Take(5)
             .Select(x => x.Id)
             .ToList();
-        var recentEntities = recentIds.Count == 0
+        var activeSessionId = orderedSessionKeys
+            .FirstOrDefault(x => ActiveSessionStatuses.Contains(x.Status))
+            ?.Id;
+        var dashboardSessionIds = recentIds.ToList();
+        if (activeSessionId is { } selectedActiveSessionId
+            && !dashboardSessionIds.Contains(selectedActiveSessionId))
+        {
+            dashboardSessionIds.Add(selectedActiveSessionId);
+        }
+        var dashboardSessionEntities = dashboardSessionIds.Count == 0
             ? []
             : await db.ExamSessionsSet
                 .AsNoTracking()
                 .Include(x => x.Exam)
                 .Include(x => x.Participants)
-                .Where(x => recentIds.Contains(x.Id))
+                .Where(x => dashboardSessionIds.Contains(x.Id))
                 .ToListAsync(cancellationToken);
-        var recentPositions = recentIds
-            .Select((id, index) => new { id, index })
-            .ToDictionary(x => x.id, x => x.index);
-        var recent = recentEntities
-            .OrderBy(x => recentPositions[x.Id])
-            .Select(x => new SessionSummaryDto(x.Id, x.ExamId, x.Exam.Title, x.RoomCode, x.Status, DateTimeOffset.UtcNow, x.StartedAtUtc, x.EndedAtUtc, x.StartedAtUtc?.AddMinutes(x.Exam.DurationMinutes), new SessionCountsDto(x.Participants.Count, x.Participants.Count(p => p.Status == ParticipantStatus.PendingApproval), x.Participants.Count(p => p.Status == ParticipantStatus.Approved), x.Participants.Count(p => p.LastSeenUtc > DateTimeOffset.UtcNow.AddSeconds(-_options.Session.DisconnectAfterSeconds)), x.Participants.Count(p => p.SubmissionStatus is SubmissionStatus.Submitted or SubmissionStatus.LateSubmitted), x.Participants.Count(p => p.SubmissionStatus == SubmissionStatus.Uploading), x.Participants.Count(p => p.Status == ParticipantStatus.Disconnected)), x.Sequence, x.RowVersion, AdmissionMode: x.AdmissionMode))
+        var serverNowUtc = DateTimeOffset.UtcNow;
+        var summariesById = dashboardSessionEntities.ToDictionary(
+            x => x.Id,
+            x => ToSessionSummary(x, serverNowUtc, _options.Session.DisconnectAfterSeconds));
+        var recent = recentIds
+            .Select(id => summariesById[id])
             .ToList();
+        var activeSession = activeSessionId is { } id
+            ? summariesById[id]
+            : null;
         long storage = 0; try { storage = Directory.EnumerateFiles(paths.RootPath, "*", SearchOption.AllDirectories).Sum(f => new FileInfo(f).Length); } catch { }
         var status = await GetStatusAsync(cancellationToken);
-        return new DashboardSummaryDto(classes, exams, active, pending, storage, recent, status.Warnings);
+        return new DashboardSummaryDto(classes, exams, active, pending, storage, recent, status.Warnings, activeSession);
     }
+
+    private static SessionSummaryDto ToSessionSummary(
+        ExamSession session,
+        DateTimeOffset serverNowUtc,
+        int disconnectAfterSeconds) =>
+        new(
+            session.Id,
+            session.ExamId,
+            session.Exam.Title,
+            session.RoomCode,
+            session.Status,
+            serverNowUtc,
+            session.StartedAtUtc,
+            session.EndedAtUtc,
+            session.StartedAtUtc?.AddMinutes(session.Exam.DurationMinutes),
+            new SessionCountsDto(
+                session.Participants.Count,
+                session.Participants.Count(p => p.Status == ParticipantStatus.PendingApproval),
+                session.Participants.Count(p => p.Status == ParticipantStatus.Approved),
+                session.Participants.Count(p => p.LastSeenUtc > serverNowUtc.AddSeconds(-disconnectAfterSeconds)),
+                session.Participants.Count(p => p.SubmissionStatus is SubmissionStatus.Submitted or SubmissionStatus.LateSubmitted),
+                session.Participants.Count(p => p.SubmissionStatus == SubmissionStatus.Uploading),
+                session.Participants.Count(p => p.Status == ParticipantStatus.Disconnected)),
+            session.Sequence,
+            session.RowVersion,
+            AdmissionMode: session.AdmissionMode);
 
     public async Task<SettingsDto> GetSettingsAsync(CancellationToken cancellationToken)
     {

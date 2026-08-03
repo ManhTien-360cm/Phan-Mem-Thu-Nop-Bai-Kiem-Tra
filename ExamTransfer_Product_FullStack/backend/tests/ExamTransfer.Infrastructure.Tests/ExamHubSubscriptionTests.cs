@@ -1,6 +1,8 @@
 using System.Security.Claims;
+using ExamTransfer.Application;
 using ExamTransfer.Domain;
 using ExamTransfer.Infrastructure.Persistence;
+using ExamTransfer.Infrastructure.Services;
 using ExamTransfer.LocalServer.Auth;
 using ExamTransfer.LocalServer.Hubs;
 using ExamTransfer.Shared.Contracts;
@@ -8,6 +10,7 @@ using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace ExamTransfer.Infrastructure.Tests;
@@ -88,8 +91,76 @@ public sealed class ExamHubSubscriptionTests
             (fixture.ConnectionId, ExamHub.SessionGroup(sessionId)),
             fixture.Groups.Added);
         Assert.Contains(
+            (fixture.ConnectionId, ExamHub.StudentSessionGroup(sessionId)),
+            fixture.Groups.Added);
+        Assert.Contains(
             (fixture.ConnectionId, ExamHub.ParticipantGroup(sessionId, participantId)),
             fixture.Groups.Added);
+    }
+
+    [Fact]
+    public async Task ParticipantConnection_PublicCloudSessionIsRejectedFailClosed()
+    {
+        var sessionId = Guid.NewGuid();
+        var participantId = Guid.NewGuid();
+        await using var fixture = await HubFixture.CreateAsync(
+            ParticipantPrincipal(sessionId, participantId),
+            sessionId);
+        var session = await fixture.Db.ExamSessionsSet.SingleAsync();
+        session.AccessMode = SessionAccessMode.PublicCloud;
+        await fixture.Db.SaveChangesAsync();
+
+        var error = await Assert.ThrowsAsync<HubException>(() => fixture.Hub.OnConnectedAsync());
+
+        Assert.Equal(ErrorCodes.Unauthorized, error.Message);
+        Assert.Empty(fixture.Groups.Added);
+    }
+
+    [Fact]
+    public async Task ParticipantConnection_WrongSessionOrUserIsRejected()
+    {
+        var claimedSessionId = Guid.NewGuid();
+        var actualSessionId = Guid.NewGuid();
+        var participantId = Guid.NewGuid();
+        await using var fixture = await HubFixture.CreateAsync(
+            ParticipantPrincipal(claimedSessionId, participantId),
+            actualSessionId);
+
+        var error = await Assert.ThrowsAsync<HubException>(() => fixture.Hub.OnConnectedAsync());
+
+        Assert.Equal(ErrorCodes.Unauthorized, error.Message);
+        Assert.Empty(fixture.Groups.Added);
+    }
+
+    [Fact]
+    public async Task AccountTeacherCannotForgeParticipantClaims()
+    {
+        var identity = (ClaimsIdentity)AccountPrincipal(UserRole.Teacher).Identity!;
+        identity.AddClaim(new Claim("session_id", Guid.NewGuid().ToString()));
+        identity.AddClaim(new Claim("participant_id", Guid.NewGuid().ToString()));
+        await using var fixture = await HubFixture.CreateAsync(new ClaimsPrincipal(identity));
+
+        var error = await Assert.ThrowsAsync<HubException>(() => fixture.Hub.OnConnectedAsync());
+
+        Assert.Equal(ErrorCodes.Unauthorized, error.Message);
+        Assert.Empty(fixture.Groups.Added);
+    }
+
+    [Fact]
+    public async Task ParticipantDisconnect_RemovesValidatedStudentGroups()
+    {
+        var sessionId = Guid.NewGuid();
+        var participantId = Guid.NewGuid();
+        await using var fixture = await HubFixture.CreateAsync(
+            ParticipantPrincipal(sessionId, participantId),
+            sessionId);
+        await fixture.Hub.OnConnectedAsync();
+
+        await fixture.Hub.OnDisconnectedAsync(null);
+
+        Assert.Contains((fixture.ConnectionId, ExamHub.SessionGroup(sessionId)), fixture.Groups.Removed);
+        Assert.Contains((fixture.ConnectionId, ExamHub.StudentSessionGroup(sessionId)), fixture.Groups.Removed);
+        Assert.Contains((fixture.ConnectionId, ExamHub.ParticipantGroup(sessionId, participantId)), fixture.Groups.Removed);
     }
 
     private static ClaimsPrincipal AccountPrincipal(UserRole role)
@@ -109,6 +180,7 @@ public sealed class ExamHubSubscriptionTests
         var identity = new ClaimsIdentity(
         [
             new Claim(ClaimTypes.Role, UserRole.Student.ToString()),
+            new Claim("user_id", participantId.ToString()),
             new Claim("session_id", sessionId.ToString()),
             new Claim("participant_id", participantId.ToString()),
             new Claim("device_id", "student-device")
@@ -168,11 +240,29 @@ public sealed class ExamHubSubscriptionTests
                 HostDeviceId = "teacher-device"
             };
             db.ExamSessionsSet.Add(session);
+            if (Guid.TryParse(principal.FindFirst("participant_id")?.Value, out var participantId))
+            {
+                db.SessionParticipantsSet.Add(new SessionParticipant
+                {
+                    Id = participantId,
+                    Session = session,
+                    SessionId = session.Id,
+                    UserId = participantId,
+                    StudentCode = "S-REALTIME",
+                    DisplayName = "Realtime Student",
+                    DeviceId = principal.FindFirst("device_id")?.Value ?? "student-device",
+                    Status = ParticipantStatus.Approved
+                });
+            }
             await db.SaveChangesAsync();
 
             var connectionId = $"connection-{Guid.NewGuid():N}";
             var groups = new RecordingGroupManager();
-            var hub = new ExamHub(null!, null!, db)
+            var dispatcher = new OnlyLanStudentNotificationDispatcher(
+                db,
+                new RecordingNotificationTransport(),
+                NullLogger<OnlyLanStudentNotificationDispatcher>.Instance);
+            var hub = new ExamHub(null!, null!, db, dispatcher)
             {
                 Context = new TestHubCallerContext(connectionId, principal),
                 Groups = groups
@@ -191,6 +281,13 @@ public sealed class ExamHubSubscriptionTests
             await Db.DisposeAsync();
             await connection.DisposeAsync();
         }
+    }
+
+    private sealed class RecordingNotificationTransport : IOnlyLanStudentNotificationTransport
+    {
+        public Task PublishSessionAsync(StudentNotificationEventDto notification, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task PublishParticipantAsync(StudentNotificationEventDto notification, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task PublishConnectionAsync(string connectionId, StudentNotificationEventDto notification, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 
     private sealed class RecordingGroupManager : IGroupManager
