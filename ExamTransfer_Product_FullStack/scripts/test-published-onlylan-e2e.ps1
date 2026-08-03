@@ -416,17 +416,20 @@ for ($iteration = 1; $iteration -le $Repeat; $iteration++) {
             -Body $finalizeBody
         if (-not $finalized.success -or
             [string]$finalized.data.status -ne 'Finalized' -or
-            [decimal]$finalized.data.score -ne 10.0 -or
+            $null -ne $finalized.data.score -or
+            [bool]$finalized.data.scoreVisible -or
             [string]$repeated.data.id -ne [string]$finalized.data.id) {
-            throw 'Quiz finalize was not successful, full-score, and idempotent.'
+            throw 'Quiz finalize was not successful, student-score-hidden, and idempotent.'
         }
 
         $teacherAttempts = Invoke-ExamApi -Method Get `
             -Uri "$baseUrl/api/v1/sessions/$($handoff.sessionId)/quiz-attempts" `
             -Headers $teacherHeaders
         $teacherAttemptRows = @($teacherAttempts.data)
-        if ($teacherAttemptRows.Count -ne 1 -or [string]$teacherAttemptRows[0].status -ne 'Finalized') {
-            throw 'Teacher monitoring did not observe exactly one finalized attempt.'
+        if ($teacherAttemptRows.Count -ne 1 -or
+            [string]$teacherAttemptRows[0].status -ne 'Finalized' -or
+            [decimal]$teacherAttemptRows[0].score -ne 10.0) {
+            throw 'Teacher monitoring did not observe exactly one full-score finalized attempt.'
         }
         Write-Host "PASS LAN_E2E_QUIZ_FINALIZED iteration=$iteration" -ForegroundColor Green
 
