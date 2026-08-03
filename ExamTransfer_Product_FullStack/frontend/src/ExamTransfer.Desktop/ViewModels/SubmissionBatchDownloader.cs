@@ -62,9 +62,10 @@ internal sealed class SubmissionBatchDownloader(IBackendClient api)
                 try
                 {
                     Directory.CreateDirectory(attemptFolder);
-                    await api.DownloadFileAsync(
+                    await api.DownloadVerifiedFileAsync(
                         $"api/v1/submissions/{submission.Id}/files/{file.Id}/content",
                         destinationPath,
+                        file.Sha256,
                         null,
                         cancellationToken);
                     successfulFiles++;
@@ -109,7 +110,7 @@ internal sealed class SubmissionBatchDownloader(IBackendClient api)
         candidate = new(candidate
             .Select(character => invalidCharacters.Contains(character) ? '_' : character)
             .ToArray());
-        candidate = candidate.Trim().TrimEnd('.', ' ');
+        candidate = candidate.Trim().Trim('.', ' ');
         if (string.IsNullOrWhiteSpace(candidate))
             candidate = fallback;
 
@@ -125,7 +126,7 @@ internal sealed class SubmissionBatchDownloader(IBackendClient api)
         return WindowsReservedNames.Contains(baseName);
     }
 
-    private static string MakeUniqueFileName(string fileName, HashSet<string> usedFileNames)
+    internal static string MakeUniqueFileName(string fileName, HashSet<string> usedFileNames)
     {
         if (usedFileNames.Add(fileName))
             return fileName;

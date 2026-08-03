@@ -2960,15 +2960,22 @@ public sealed class StudentDownloadViewModel : ProductPageBase
     private Task DownloadAsync() => RunAsync("Đang tải file đề", "File đề đã được tải về", async ct =>
     {
         if (SelectedFile is null || !state.ExamId.HasValue) return;
+        Directory.CreateDirectory(Destination);
+        var destinationPath = Path.Combine(
+            Destination,
+            SubmissionBatchDownloader.MakeSafePathComponent(
+                SelectedFile.Name,
+                $"exam-file-{SelectedFile.Id:N}",
+                160));
         if (state.AccessMode == SessionAccessMode.PublicCloud)
         {
             var signed = await AppServices.PublicCloud.GetExamFileUrlAsync(state.SessionId!.Value, SelectedFile.Id, ct);
-            await AppServices.PublicCloud.DownloadVerifiedAsync(signed, Path.Combine(Destination, SelectedFile.Name), ct);
+            await AppServices.PublicCloud.DownloadVerifiedAsync(signed, destinationPath, ct);
             Progress = 100;
             return;
         }
         var reporter = new Progress<double>(x => Progress = x);
-        await api.DownloadVerifiedFileAsync($"api/v1/exams/{state.ExamId}/files/{SelectedFile.Id}/content", Path.Combine(Destination, SelectedFile.Name), SelectedFile.Sha256, reporter, ct);
+        await api.DownloadVerifiedFileAsync($"api/v1/exams/{state.ExamId}/files/{SelectedFile.Id}/content", destinationPath, SelectedFile.Sha256, reporter, ct);
     });
 
     private Task DownloadAllAsync() => RunAsync("Đang tải toàn bộ đề", "Tất cả file đề đã được tải về", async ct =>
@@ -2976,17 +2983,26 @@ public sealed class StudentDownloadViewModel : ProductPageBase
         if (!state.ExamId.HasValue) return;
         Directory.CreateDirectory(Destination);
         var index = 0;
+        var usedFileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var file in Files)
         {
             index++;
+            var safeFileName = SubmissionBatchDownloader.MakeSafePathComponent(
+                file.Name,
+                $"exam-file-{file.Id:N}",
+                160);
+            safeFileName = SubmissionBatchDownloader.MakeUniqueFileName(
+                safeFileName,
+                usedFileNames);
+            var destinationPath = Path.Combine(Destination, safeFileName);
             if (state.AccessMode == SessionAccessMode.PublicCloud)
             {
                 var signed = await AppServices.PublicCloud.GetExamFileUrlAsync(state.SessionId!.Value, file.Id, ct);
-                await AppServices.PublicCloud.DownloadVerifiedAsync(signed, Path.Combine(Destination, file.Name), ct);
+                await AppServices.PublicCloud.DownloadVerifiedAsync(signed, destinationPath, ct);
             }
             else
             {
-                await api.DownloadVerifiedFileAsync($"api/v1/exams/{state.ExamId}/files/{file.Id}/content", Path.Combine(Destination, file.Name), file.Sha256, null, ct);
+                await api.DownloadVerifiedFileAsync($"api/v1/exams/{state.ExamId}/files/{file.Id}/content", destinationPath, file.Sha256, null, ct);
             }
             Progress = index * 100d / Files.Count;
         }

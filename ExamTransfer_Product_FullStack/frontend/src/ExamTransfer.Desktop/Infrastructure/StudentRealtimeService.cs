@@ -79,7 +79,9 @@ public sealed class StudentRealtimeService : IStudentRealtimeService
                 ClearIdentity();
                 return;
             }
-            realtime = new RealtimeService(api.BaseAddress.ToString());
+            realtime = new RealtimeService(
+                api.BaseAddress.ToString(),
+                RealtimeAuthenticationMode.ParticipantHeader);
             realtime.EventReceived += Forward;
             realtime.NotificationReceived += ForwardNotification;
             await realtime.ConnectAsync(session.AccessToken, ct);

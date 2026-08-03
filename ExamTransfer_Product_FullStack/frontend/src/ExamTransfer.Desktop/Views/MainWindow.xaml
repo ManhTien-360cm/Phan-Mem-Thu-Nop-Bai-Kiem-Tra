@@ -7,8 +7,8 @@
         Title="ExamTransfer - Thu và gửi bài kiểm tra"
         Width="1440"
         Height="900"
-        MinWidth="1180"
-        MinHeight="720"
+        MinWidth="640"
+        MinHeight="480"
         WindowStartupLocation="CenterScreen">
     <Window.DataContext>
         <vm:MainViewModel />
@@ -53,7 +53,7 @@
     <Grid Background="{DynamicResource AppBackgroundBrush}">
         <Grid.ColumnDefinitions>
             <!-- Sidebar 240px – compact hơn 264px cũ -->
-            <ColumnDefinition Width="240" />
+            <ColumnDefinition Width="220" />
             <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
 
@@ -293,24 +293,29 @@
                     </Grid.ColumnDefinitions>
 
                     <!-- Page identity: icon + title + description inline -->
-                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <Grid VerticalAlignment="Center">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
                         <TextBlock Text="{Binding PageGlyph}"
                                    Style="{StaticResource IconText}"
                                    FontSize="16"
                                    Foreground="{DynamicResource PrimaryBrush}"
                                    Margin="0,0,10,0" />
-                        <StackPanel VerticalAlignment="Center">
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
                             <TextBlock Text="{Binding PageTitle}"
                                        FontSize="15"
                                        FontWeight="SemiBold"
                                        VerticalAlignment="Center"
-                                       TextWrapping="NoWrap" />
+                                       TextWrapping="NoWrap"
+                                       TextTrimming="CharacterEllipsis" />
                             <TextBlock Text="{Binding PageDescription}"
                                        Style="{StaticResource CaptionText}"
                                        TextWrapping="NoWrap"
                                        TextTrimming="CharacterEllipsis" />
                         </StackPanel>
-                    </StackPanel>
+                    </Grid>
 
                     <!-- Connection status + refresh -->
                     <StackPanel Grid.Column="1"
@@ -323,6 +328,9 @@
                                      VerticalAlignment="Center" />
                             <TextBlock Text="{Binding Connection}"
                                        Margin="7,0,0,0"
+                                       MaxWidth="160"
+                                       TextTrimming="CharacterEllipsis"
+                                       TextWrapping="NoWrap"
                                        VerticalAlignment="Center"
                                        FontSize="12"
                                        FontWeight="SemiBold"
