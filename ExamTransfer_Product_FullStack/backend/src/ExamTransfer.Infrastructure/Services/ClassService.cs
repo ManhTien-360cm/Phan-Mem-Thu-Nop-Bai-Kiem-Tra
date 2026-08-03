@@ -4,12 +4,14 @@ using ExamTransfer.Domain;
 using ExamTransfer.Infrastructure.Importing;
 using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Shared.Contracts;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
+using System.Security.Claims;
 
 namespace ExamTransfer.Infrastructure.Services;
 
-public sealed class ClassService(AppDbContext db, IMemoryCache cache, IAuditService audit, IOutboxService outbox, ICloudAdapter? cloud = null) : IClassService
+public sealed class ClassService(AppDbContext db, IMemoryCache cache, IAuditService audit, IOutboxService outbox, ICloudAdapter? cloud = null, IHttpContextAccessor? httpContextAccessor = null) : IClassService
 {
     public async Task<PagedResult<ClassSummaryDto>> ListAsync(string? search, int page, int pageSize, CancellationToken cancellationToken)
     {
@@ -79,7 +81,8 @@ public sealed class ClassService(AppDbContext db, IMemoryCache cache, IAuditServ
             var entity = new ClassRoom
             {
                 Name = request.Name.Trim(), Code = request.Code.Trim(), SchoolYear = request.SchoolYear.Trim(),
-                Description = request.Description?.Trim(), Status = ClassStatus.Active, AccessMode = request.AccessMode
+                Description = request.Description?.Trim(), Status = ClassStatus.Active, AccessMode = request.AccessMode,
+                CreatedBy = RequestActorId()
             };
             db.ClassesSet.Add(entity);
             await db.SaveChangesAsync(cancellationToken);
@@ -563,6 +566,15 @@ public sealed class ClassService(AppDbContext db, IMemoryCache cache, IAuditServ
             ErrorCodes.CloudOffline,
             "PublicCloud chưa được cấu hình cho thao tác ghi danh.",
             503);
+
+    private Guid? RequestActorId() =>
+        Guid.TryParse(
+            httpContextAccessor?.HttpContext?.User.FindFirstValue(ClaimTypes.NameIdentifier)
+                ?? httpContextAccessor?.HttpContext?.User.FindFirstValue("sub"),
+            out var actorId)
+            && actorId != Guid.Empty
+                ? actorId
+                : null;
 
     private static ClassEnrollmentRequestDto ToEnrollmentDto(ClassEnrollmentRequest x) =>
         new(

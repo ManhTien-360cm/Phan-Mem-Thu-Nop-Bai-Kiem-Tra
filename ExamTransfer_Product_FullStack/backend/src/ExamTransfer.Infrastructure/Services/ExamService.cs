@@ -5,13 +5,15 @@ using ExamTransfer.Domain;
 using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Infrastructure.Storage;
 using ExamTransfer.Shared.Contracts;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using System.Security.Claims;
 
 namespace ExamTransfer.Infrastructure.Services;
 
-public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStorage chunks, IAuditService audit, IOutboxService outbox, IRealtimePublisher realtime, IOptions<ExamTransferOptions> options, ILogger<ExamService> logger) : IExamService
+public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStorage chunks, IAuditService audit, IOutboxService outbox, IRealtimePublisher realtime, IOptions<ExamTransferOptions> options, ILogger<ExamService> logger, IHttpContextAccessor? httpContextAccessor = null) : IExamService
 {
     private readonly ExamTransferOptions _options = options.Value;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -101,7 +103,8 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
                 ClassId = request.ClassId, Title = request.Title.Trim(), Subject = request.Subject.Trim(), Description = request.Description?.Trim(),
                 DurationMinutes = request.DurationMinutes, DeliveryType = request.DeliveryType,
                 QuizResultPolicy = policy.ResultPolicy, SupervisionMode = policy.SupervisionMode,
-                FileRuleJson = JsonSerializer.Serialize(request.FileRule, JsonOptions), Status = ExamStatus.Draft, Version = 1
+                FileRuleJson = JsonSerializer.Serialize(request.FileRule, JsonOptions), Status = ExamStatus.Draft, Version = 1,
+                CreatedBy = RequestActorId()
             };
             db.ExamsSet.Add(exam); await db.SaveChangesAsync(cancellationToken);
             await audit.WriteAsync("ExamCreated", nameof(Exam), exam.Id.ToString(), null, null, ToAudit(exam), cancellationToken);
@@ -872,6 +875,14 @@ public sealed class ExamService(AppDbContext db, IStoragePaths paths, IChunkStor
         created_at = x.CreatedAtUtc,
         updated_at = x.UpdatedAtUtc
     };
+    private Guid? RequestActorId() =>
+        Guid.TryParse(
+            httpContextAccessor?.HttpContext?.User.FindFirstValue(ClaimTypes.NameIdentifier)
+                ?? httpContextAccessor?.HttpContext?.User.FindFirstValue("sub"),
+            out var actorId)
+            && actorId != Guid.Empty
+                ? actorId
+                : null;
     private void EnsureInsideRoot(string path) { if (!path.StartsWith(Path.GetFullPath(paths.RootPath), StringComparison.OrdinalIgnoreCase)) throw new ApiException(ErrorCodes.Forbidden, "Đường dẫn file không hợp lệ.", 403); }
     private static void Validate(string title, string subject, int duration, FileRuleDto rule)
     {

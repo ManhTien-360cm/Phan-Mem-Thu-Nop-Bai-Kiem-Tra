@@ -1,4 +1,5 @@
 ﻿using ExamTransfer.Application;
+using System.Security.Claims;
 using System.Text.Json;
 using ExamTransfer.Domain;
 using ExamTransfer.Infrastructure;
@@ -23,6 +24,65 @@ namespace ExamTransfer.Infrastructure.Tests;
 
 public sealed class CoreWorkflowPersistenceTests
 {
+    [Fact]
+    public async Task CreateClassAndExam_CaptureAuthenticatedOwnerForAuthorization()
+    {
+        await using var database = await FileDatabase.CreateAsync();
+        var actorId = Guid.NewGuid();
+        var principal = new ClaimsPrincipal(new ClaimsIdentity(
+        [
+            new Claim(ClaimTypes.NameIdentifier, actorId.ToString()),
+            new Claim("sub", actorId.ToString())
+        ], "test"));
+        var accessor = new HttpContextAccessor
+        {
+            HttpContext = new DefaultHttpContext { User = principal }
+        };
+        var audit = new AuditService(database.Context, accessor);
+        var outbox = new RecordingOutbox();
+        var classes = new ClassService(
+            database.Context,
+            new MemoryCache(new MemoryCacheOptions()),
+            audit,
+            outbox,
+            httpContextAccessor: accessor);
+        var classroom = await classes.CreateAsync(
+            new("Owned class", "OWNED-CLASS", "2026-2027", null, ClassAccessMode.Public),
+            CancellationToken.None);
+
+        var storageRoot = Path.Combine(
+            Path.GetTempPath(),
+            "ExamTransfer.OwnerTests",
+            Guid.NewGuid().ToString("N"));
+        var exams = new ExamService(
+            database.Context,
+            new TestStoragePaths(storageRoot),
+            new ChunkStorage(),
+            audit,
+            outbox,
+            new NoOpRealtimePublisher(),
+            Options.Create(new ExamTransferOptions()),
+            NullLogger<ExamService>.Instance,
+            accessor);
+        var exam = await exams.CreateAsync(
+            new(
+                classroom.Id,
+                "Owned exam",
+                "Security",
+                null,
+                30,
+                new FileRuleDto([".txt"], 1024 * 1024, 1024 * 1024, 1, false, true)),
+            CancellationToken.None);
+
+        database.Context.ChangeTracker.Clear();
+        Assert.Equal(
+            actorId,
+            (await database.Context.ClassesSet.SingleAsync(x => x.Id == classroom.Id)).CreatedBy);
+        Assert.Equal(
+            actorId,
+            (await database.Context.ExamsSet.SingleAsync(x => x.Id == exam.Id)).CreatedBy);
+    }
+
     [Fact]
     public async Task Dashboard_AfterClassCreation_ReturnsUpdatedRealClassCount()
     {
