@@ -231,12 +231,22 @@ public sealed class LocalServerLifecycleService
 
     private string? FindServerExecutable()
     {
-        var expected = ExpectedServerExecutable();
-        return File.Exists(expected) ? expected : null;
+        foreach (var candidate in GetCandidateServerExecutables())
+        {
+            if (File.Exists(candidate)) return candidate;
+        }
+        return null;
     }
 
     private string ExpectedServerExecutable() =>
-        Path.GetFullPath(Path.Combine(baseDirectory, "..", "Server", "ExamTransfer.LocalServer.exe"));
+        FindServerExecutable() ?? Path.GetFullPath(Path.Combine(baseDirectory, "..", "Server", "ExamTransfer.LocalServer.exe"));
+
+    private IEnumerable<string> GetCandidateServerExecutables()
+    {
+        yield return Path.GetFullPath(Path.Combine(baseDirectory, "..", "Server", "ExamTransfer.LocalServer.exe"));
+        yield return Path.GetFullPath(Path.Combine(baseDirectory, "Server", "ExamTransfer.LocalServer.exe"));
+        yield return Path.GetFullPath(Path.Combine(baseDirectory, "ExamTransfer.LocalServer.exe"));
+    }
 
 }
 
