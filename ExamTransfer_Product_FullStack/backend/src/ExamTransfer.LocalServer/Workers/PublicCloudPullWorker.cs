@@ -328,13 +328,21 @@ public sealed class PublicCloudPullWorker(
             }
             case "session_participants":
             {
+                var sessionId = GuidValue(row, "session_id");
+                var studentCode = StringValue(row, "student_code");
                 var entity = await db.SessionParticipantsSet.FindAsync([id], cancellationToken);
+                if (entity is null)
+                {
+                    entity = await db.SessionParticipantsSet.FirstOrDefaultAsync(
+                        x => x.SessionId == sessionId && x.StudentCode == studentCode,
+                        cancellationToken);
+                }
                 if (entity is not null && entity.CloudVersion >= record.CloudVersion) return entity.Id;
                 entity ??= new SessionParticipant { Id = id };
                 if (db.Entry(entity).State == EntityState.Detached) db.SessionParticipantsSet.Add(entity);
-                entity.SessionId = GuidValue(row, "session_id");
+                entity.SessionId = sessionId;
                 entity.UserId = NullableGuid(row, "user_id");
-                entity.StudentCode = StringValue(row, "student_code");
+                entity.StudentCode = studentCode;
                 entity.DisplayName = StringValue(row, "display_name");
                 entity.ClassName = NullableString(row, "class_name");
                 entity.DeviceId = NullableString(row, "device_id") ?? string.Empty;

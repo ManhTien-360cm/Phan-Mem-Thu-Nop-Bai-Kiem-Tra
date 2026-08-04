@@ -380,6 +380,15 @@ public sealed class LocalServerRuntime(int port) : ILocalServerRuntime
         startInfo.Environment["Cloud__SupabasePublishableKey"] = publishableKey;
         startInfo.Environment["Cloud__OrganizationId"] = organization.ToString();
         startInfo.Environment["Cloud__AccessMode"] = CloudAccessModes.UserSession;
+
+        // Strip any sensitive credentials inherited from the parent process so they
+        // are never forwarded to the child LocalServer process.
+        var sensitiveKeys = startInfo.Environment.Keys
+            .Where(k => k.Contains("SECRET", StringComparison.OrdinalIgnoreCase)
+                     || k.Contains("SERVICE", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        foreach (var key in sensitiveKeys)
+            startInfo.Environment.Remove(key);
     }
 
     public async Task StopExactAsync(
