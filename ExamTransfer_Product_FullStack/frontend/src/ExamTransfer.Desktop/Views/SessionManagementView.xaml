@@ -129,76 +129,83 @@
             </Border>
 
             <!-- Create room panel -->
-            <Border Grid.Column="2" Style="{StaticResource Card}">
-                <StackPanel>
-                    <TextBlock Text="Tạo phòng mới"
-                               Style="{StaticResource SectionTitleText}" />
-                    <TextBlock Text="Bài kiểm tra đã phát hành"
-                               Style="{StaticResource LabelText}"
-                               Margin="0,16,0,6" />
-                    <ComboBox ItemsSource="{Binding Exams}"
-                              SelectedItem="{Binding SelectedExam}"
-                              DisplayMemberPath="Title" />
-                    <Grid Margin="0,12,0,0">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition />
-                            <ColumnDefinition Width="12" />
-                            <ColumnDefinition />
-                        </Grid.ColumnDefinitions>
-                        <StackPanel>
-                            <TextBlock Text="Mã phòng tùy chọn" Style="{StaticResource LabelText}" Margin="0,0,0,6" />
-                            <TextBox Text="{Binding RoomCode}" />
-                        </StackPanel>
-                        <StackPanel Grid.Column="2">
-                            <TextBlock Text="Sức chứa" Style="{StaticResource LabelText}" Margin="0,0,0,6" />
-                            <TextBox Text="{Binding Capacity}" />
-                        </StackPanel>
-                    </Grid>
-                    <CheckBox Content="Tự động duyệt học sinh"
-                              IsChecked="{Binding AutoApprove}"
-                              Margin="0,16,0,0" />
-                    <TextBlock Text="Phạm vi truy cập"
-                               Style="{StaticResource LabelText}"
-                               Margin="0,16,0,6" />
-                    <ComboBox ItemsSource="{Binding AccessModes}"
-                              SelectedItem="{Binding AccessMode}" />
-                    <Button Content="Lưu phạm vi phiên đã chọn"
-                            Command="{Binding SaveSettingsCommand}"
-                            Style="{StaticResource SecondaryButton}"
-                            Margin="0,12,0,0" />
-                    <Border Style="{StaticResource SubtleCard}" Margin="0,16,0,0">
-                        <TextBlock Text="Luồng mặc định tạo kỳ thi OpenRequest không gắn lớp và mở ngay ở trạng thái Đang chờ."
-                                   Style="{StaticResource BodyText}" />
-                    </Border>
-                    <Border Style="{StaticResource SubtleCard}" Margin="0,12,0,0">
-                        <StackPanel>
-                            <TextBlock Text="{Binding ProjectionStatus}"
-                                       Foreground="{Binding ProjectionTone, Converter={StaticResource ToneBrushConverter}}"
-                                       TextWrapping="Wrap" />
-                            <TextBlock Text="Chỉ chia sẻ mã phòng PublicCloud khi trạng thái xác nhận Sẵn sàng."
-                                       Style="{StaticResource CaptionText}"
-                                       Margin="0,6,0,0" />
-                            <TextBlock Text="Khi mã bị trùng, nhập mã mới ở ô trên hoặc để nguyên để hệ thống tự sinh mã khác."
-                                       Style="{StaticResource CaptionText}"
-                                       Margin="0,6,0,0" />
-                            <Button Content="Đổi/sinh mã PublicCloud"
-                                    Command="{Binding RecoverRoomCodeCommand}"
-                                    IsEnabled="{Binding CanRecoverRoomCode}"
-                                    Style="{StaticResource SecondaryButton}"
-                                    Margin="0,10,0,0" />
-                            <Button Content="Thử đồng bộ PublicCloud lại"
-                                    Command="{Binding RetryProjectionCommand}"
-                                    IsEnabled="{Binding CanRetryProjection}"
-                                    Style="{StaticResource SecondaryButton}"
-                                    Margin="0,10,0,0" />
-                        </StackPanel>
-                    </Border>
-                    <Button Content="Tạo và mở kỳ thi"
-                            Command="{Binding CreateCommand}"
-                            Style="{StaticResource PrimaryButton}"
-                            Margin="0,16,0,0" />
-                </StackPanel>
-            </Border>
+            <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <TextBlock Text="Tạo phòng mới"
+                                   Style="{StaticResource SectionTitleText}" />
+                        <TextBlock Text="Bài kiểm tra đã phát hành"
+                                   Style="{StaticResource LabelText}"
+                                   Margin="0,16,0,6" />
+                        <ComboBox ItemsSource="{Binding Exams}"
+                                   SelectedItem="{Binding SelectedExam}"
+                                   DisplayMemberPath="Title" />
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition />
+                                <ColumnDefinition Width="12" />
+                                <ColumnDefinition />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="Mã phòng tùy chọn" Style="{StaticResource LabelText}" Margin="0,0,0,6" />
+                                <TextBox Text="{Binding RoomCode}" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="2">
+                                <TextBlock Text="Sức chứa" Style="{StaticResource LabelText}" Margin="0,0,0,6" />
+                                <TextBox Text="{Binding Capacity}" />
+                            </StackPanel>
+                        </Grid>
+                        <CheckBox Content="Tự động duyệt học sinh"
+                                   IsChecked="{Binding AutoApprove}"
+                                   Margin="0,16,0,0" />
+                        <TextBlock Text="Phạm vi truy cập"
+                                   Style="{StaticResource LabelText}"
+                                   Margin="0,16,0,6" />
+                        <ComboBox ItemsSource="{Binding AccessModes}"
+                                   SelectedItem="{Binding AccessMode}" />
+                        
+                        <Button Content="Tạo và mở kỳ thi"
+                                Command="{Binding CreateCommand}"
+                                Style="{StaticResource PrimaryButton}"
+                                MinHeight="42"
+                                FontSize="14"
+                                FontWeight="SemiBold"
+                                Margin="0,16,0,0" />
+
+                        <Button Content="Lưu phạm vi phiên đã chọn"
+                                Command="{Binding SaveSettingsCommand}"
+                                Style="{StaticResource SecondaryButton}"
+                                Margin="0,8,0,0" />
+                        <Border Style="{StaticResource SubtleCard}" Margin="0,16,0,0">
+                            <TextBlock Text="Luồng mặc định tạo kỳ thi OpenRequest không gắn lớp và mở ngay ở trạng thái Đang chờ."
+                                       Style="{StaticResource BodyText}" />
+                        </Border>
+                        <Border Style="{StaticResource SubtleCard}" Margin="0,12,0,0">
+                            <StackPanel>
+                                <TextBlock Text="{Binding ProjectionStatus}"
+                                           Foreground="{Binding ProjectionTone, Converter={StaticResource ToneBrushConverter}}"
+                                           TextWrapping="Wrap" />
+                                <TextBlock Text="Chỉ chia sẻ mã phòng PublicCloud khi trạng thái xác nhận Sẵn sàng."
+                                           Style="{StaticResource CaptionText}"
+                                           Margin="0,6,0,0" />
+                                <TextBlock Text="Khi mã bị trùng, nhập mã mới ở ô trên hoặc để nguyên để hệ thống tự sinh mã khác."
+                                           Style="{StaticResource CaptionText}"
+                                           Margin="0,6,0,0" />
+                                <Button Content="Đổi/sinh mã PublicCloud"
+                                        Command="{Binding RecoverRoomCodeCommand}"
+                                        IsEnabled="{Binding CanRecoverRoomCode}"
+                                        Style="{StaticResource SecondaryButton}"
+                                        Margin="0,10,0,0" />
+                                <Button Content="Thử đồng bộ PublicCloud lại"
+                                        Command="{Binding RetryProjectionCommand}"
+                                        IsEnabled="{Binding CanRetryProjection}"
+                                        Style="{StaticResource SecondaryButton}"
+                                        Margin="0,10,0,0" />
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </Border>
+            </ScrollViewer>
         </Grid>
 
         <!-- Status bar -->

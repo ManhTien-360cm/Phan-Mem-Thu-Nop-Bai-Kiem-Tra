@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Windows.Input;
@@ -825,10 +825,16 @@ public sealed class ExamManagementViewModel : ProductPageBase
                 "Thay bộ câu hỏi hiện tại",
                 "Commit sẽ thay toàn bộ câu hỏi của phiên bản hiện tại. Tiếp tục?"))
             return;
-        _ = ApiGuard.Require(await api.PostAsync<QuizImportCommitRequest, QuizImportResultDto>(
+        var commitResult = ApiGuard.Require(await api.PostAsync<QuizImportCommitRequest, QuizImportResultDto>(
             $"api/v1/exams/{SelectedExam.Id}/quiz-import/commit",
             new(preview.PreviewToken, preview.WillReplaceExisting, currentExamRowVersion),
             ct));
+        // Cap nhat ngay lap tuc de CanPublish/PublishHint hien thi dung truoc khi refresh
+        currentHasCommittedQuizSource = true;
+        currentQuizQuestionCount = commitResult.QuestionCount;
+        Raise(nameof(CanPublish));
+        Raise(nameof(PublishHint));
+        RaiseCommands();
         QuizImport.Clear();
         await RefreshExamsCoreAsync(SelectedExam.Id, ct);
     });
@@ -3174,6 +3180,17 @@ public sealed class StudentDownloadViewModel : ProductPageBase
                 return;
             }
             api.SetParticipantToken(state.AccessToken);
+            if (state.ParticipantStatus is not null && state.ParticipantStatus != ParticipantStatus.Approved)
+            {
+                var statusLabel = state.ParticipantStatus == ParticipantStatus.PendingApproval
+                    ? "đang chờ giáo viên duyệt"
+                    : state.ParticipantStatus == ParticipantStatus.Rejected
+                        ? "đã bị từ chối"
+                        : state.ParticipantStatus.ToString();
+                Status = $"Không thể tải đề – tài khoản {statusLabel}. Sau khi được duyệt, ấn Làm mới để nhận đề.";
+                StatusTone = "warning";
+                return;
+            }
             var session = ApiGuard.Require(await api.GetSessionAsync(state.SessionId.Value, token));
             state.ExamId = session.Summary.ExamId;
             var manifest = ApiGuard.Require(await api.GetAsync<ExamManifestDto>($"api/v1/exams/{session.Summary.ExamId}/manifest", token));
@@ -3711,7 +3728,21 @@ internal static class CollectionExtensions
 {
     public static void ReplaceWith<T>(this ObservableCollection<T> target, IEnumerable<T> source)
     {
+        var list = source is System.Collections.Generic.IReadOnlyList<T> l ? l : System.Linq.Enumerable.ToList(source);
+        if (target.Count == list.Count)
+        {
+            var same = true;
+            for (var i = 0; i < list.Count; i++)
+            {
+                if (!Equals(target[i], list[i]))
+                {
+                    same = false;
+                    break;
+                }
+            }
+            if (same) return;
+        }
         target.Clear();
-        foreach (var item in source) target.Add(item);
+        foreach (var item in list) target.Add(item);
     }
 }

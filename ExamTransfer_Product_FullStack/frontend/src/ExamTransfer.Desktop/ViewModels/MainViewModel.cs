@@ -363,7 +363,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         accountHeartbeatCts?.Cancel();
         accountHeartbeatCts?.Dispose();
-        if (!authState.IsTeacher || authState.CurrentAccount is null) return;
+        if (authState.CurrentAccount is null) return;
 
         accountHeartbeatCts = new CancellationTokenSource();
         var token = accountHeartbeatCts.Token;
@@ -388,8 +388,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 catch (Exception ex)
                 {
                     FrontendLogger.Log(ex, "MainViewModel.AccountHeartbeat");
-                    await RunOnUiAsync(() => ClearAuthToLogin());
-                    break;
+                    if (authState.IsTeacher)
+                    {
+                        await RunOnUiAsync(() => ClearAuthToLogin());
+                        break;
+                    }
                 }
             }
         }, token);

@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Windows;
 using System.Windows.Input;
 using ExamTransfer.Desktop.Core;
@@ -16,6 +16,7 @@ public sealed class LiveMonitorViewModel : ProductPageBase
     private readonly ProjectionRefreshCoordinator projectionRefresh;
     private readonly RealtimeRefreshDebouncer realtimeRefresh =
         new(TimeSpan.FromMilliseconds(150), "LiveMonitor.RealtimeRefresh");
+    private CancellationTokenSource? cloudPollingCts;
     private SessionSummaryDto? selectedSession;
     private ParticipantDto? selectedParticipant;
     private string message = "Vui lòng kiểm tra file bài làm trước khi nộp.";
@@ -58,6 +59,7 @@ public sealed class LiveMonitorViewModel : ProductPageBase
             realtimeBinding
                 .SelectAsync(value?.Id, DisposeToken)
                 .SafeFireAndForget("LiveMonitor.SelectRealtimeSession");
+            StopCloudPolling();
             RaiseCommands();
         }
     }
@@ -88,7 +90,10 @@ public sealed class LiveMonitorViewModel : ProductPageBase
             {
                 await LoadSessionCoreAsync(token);
                 if (SelectedSession.AccessMode == SessionAccessMode.PublicCloud)
+                {
                     projectionRefresh.StartRecovery();
+                    StartCloudPolling();
+                }
             }
         });
     }
@@ -227,10 +232,47 @@ public sealed class LiveMonitorViewModel : ProductPageBase
             "info",
             "\uE7BA"));
 
+    private void StartCloudPolling()
+    {
+        StopCloudPolling();
+        if (IsDisposed) return;
+        var cts = CancellationTokenSource.CreateLinkedTokenSource(DisposeToken);
+        cloudPollingCts = cts;
+        CloudPollingLoopAsync(cts.Token).SafeFireAndForget("LiveMonitor.CloudPolling");
+    }
+
+    private void StopCloudPolling()
+    {
+        var cts = cloudPollingCts;
+        cloudPollingCts = null;
+        cts?.Cancel();
+        cts?.Dispose();
+    }
+
+    private async Task CloudPollingLoopAsync(CancellationToken cancellationToken)
+    {
+        // Polling định kỳ 5 giây để giáo viên luôn thấy học sinh mới tham gia qua PublicCloud,
+        // bù đắp cho trường hợp realtime event bị missed (vd: teacher mở màn sau khi student đã join).
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
+                if (cancellationToken.IsCancellationRequested) break;
+                if (SelectedSession?.AccessMode != SessionAccessMode.PublicCloud) break;
+                await RefreshProjectionSnapshotAsync(SelectedSession?.Id, cancellationToken);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+    }
+
     public override void Dispose()
     {
         if (IsDisposed)
             return;
+        StopCloudPolling();
         realtime.NotificationReceived -= OnRealtimeNotification;
         realtime.EventReceived -= OnRealtimeEvent;
         realtimeRefresh.Dispose();

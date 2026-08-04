@@ -1,4 +1,4 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text;
 using ExamTransfer.Desktop.Core;
@@ -280,7 +280,7 @@ public sealed class AppAuthSessionState : ObservableObject
     {
         if (stored.Authority == AuthSessionAuthority.LocalServer)
             return stored.Account!.ExpiresAtUtc > DateTimeOffset.UtcNow
-                && stored.Account.Role is UserRole.Admin or UserRole.Teacher
+                && stored.Account.Role is UserRole.Admin or UserRole.Teacher or UserRole.Student
                 && ValidLocalServerTokenBinding(
                     stored.AccessToken,
                     stored.Account);
