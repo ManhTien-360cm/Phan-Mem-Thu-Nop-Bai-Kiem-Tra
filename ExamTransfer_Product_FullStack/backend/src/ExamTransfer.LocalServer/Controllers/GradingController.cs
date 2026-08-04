@@ -1,4 +1,4 @@
-﻿using ExamTransfer.Application;
+using ExamTransfer.Application;
 using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
@@ -173,8 +173,10 @@ public sealed class GradingController(
             .Where(x => x.Id == createdBy.Value && x.IsActive)
             .Select(x => x.OrganizationId)
             .SingleOrDefaultAsync(ct);
-        return !string.IsNullOrWhiteSpace(ownerOrganization)
-            && string.Equals(ownerOrganization, actorOrganization, StringComparison.Ordinal);
+        // ownerOrganization == null → created by local admin (no org) → grant access to any org-authenticated teacher
+        if (string.IsNullOrWhiteSpace(ownerOrganization))
+            return true;
+        return string.Equals(ownerOrganization, actorOrganization, StringComparison.Ordinal);
     }
 
     private async Task EnsureSessionAccessAsync(Guid sessionId, CancellationToken ct)
@@ -202,8 +204,9 @@ public sealed class GradingController(
             .Where(x => x.Id == createdBy.Value && x.IsActive)
             .Select(x => x.OrganizationId)
             .SingleOrDefaultAsync(ct);
-        if (string.IsNullOrWhiteSpace(ownerOrganization)
-            || !string.Equals(ownerOrganization, actorOrganization, StringComparison.Ordinal))
+        // ownerOrganization == null → session created by local admin (no org) → allow any org-authenticated teacher
+        if (!string.IsNullOrWhiteSpace(ownerOrganization)
+            && !string.Equals(ownerOrganization, actorOrganization, StringComparison.Ordinal))
             throw new ApiException(ErrorCodes.Forbidden, "Không được xuất điểm thuộc tổ chức khác.", 403);
     }
 }

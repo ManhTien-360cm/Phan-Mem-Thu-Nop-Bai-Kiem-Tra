@@ -581,8 +581,11 @@ public sealed class GradeService(
             .Where(x => x.Id == ownerId.Value && x.IsActive)
             .Select(x => x.OrganizationId)
             .SingleOrDefaultAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(ownerOrganizationId)
-            || !string.Equals(ownerOrganizationId, actorOrganizationId, StringComparison.Ordinal))
+        // ownerOrganizationId == null means the exam was created by the local admin account
+        // (which has no org). Local admin owns all local resources, so any org-authenticated
+        // teacher on this LocalServer is allowed to grade it.
+        if (!string.IsNullOrWhiteSpace(ownerOrganizationId)
+            && !string.Equals(ownerOrganizationId, actorOrganizationId, StringComparison.Ordinal))
         {
             throw new ApiException(ErrorCodes.Forbidden, "Không được chấm bài thuộc tổ chức khác.", 403);
         }

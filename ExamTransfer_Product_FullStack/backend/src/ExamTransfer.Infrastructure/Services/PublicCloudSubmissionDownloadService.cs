@@ -357,9 +357,13 @@ public sealed class PublicCloudSubmissionDownloadService(
             .SingleOrDefaultAsync(cancellationToken);
         if (string.IsNullOrWhiteSpace(actorOrganizationId)
             || string.IsNullOrWhiteSpace(actor.OrganizationId)
-            || !string.Equals(actor.OrganizationId, actorOrganizationId, StringComparison.Ordinal)
-            || string.IsNullOrWhiteSpace(ownerOrganizationId)
-            || !string.Equals(ownerOrganizationId, actorOrganizationId, StringComparison.Ordinal))
+            || !string.Equals(actor.OrganizationId, actorOrganizationId, StringComparison.Ordinal))
+        {
+            throw Denied(actor.Id, sessionId, submissionId, traceId);
+        }
+        // ownerOrganizationId == null → exam created by local admin (no org) → allow any org-authenticated teacher
+        if (!string.IsNullOrWhiteSpace(ownerOrganizationId)
+            && !string.Equals(ownerOrganizationId, actorOrganizationId, StringComparison.Ordinal))
         {
             throw Denied(actor.Id, sessionId, submissionId, traceId);
         }
