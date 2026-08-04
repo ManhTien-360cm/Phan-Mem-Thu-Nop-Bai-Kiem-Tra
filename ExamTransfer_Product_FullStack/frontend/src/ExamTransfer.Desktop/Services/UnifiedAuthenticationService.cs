@@ -39,6 +39,52 @@ public sealed class UnifiedAuthenticationService(
         backend.SetParticipantToken(null);
         publicCloud.Logout();
 
+        if (!publicCloud.Configured)
+        {
+            var standaloneLifecycle = await localServer.EnsureStartedAsync(
+                UserRole.Teacher,
+                cancellationToken);
+            if (standaloneLifecycle.Status is not ("SERVER_HEALTHY" or "SERVER_STARTED"))
+            {
+                await localServer.StopOwnedAsync(CancellationToken.None);
+                throw new InvalidOperationException(
+                    $"{standaloneLifecycle.Status}: {standaloneLifecycle.Message}");
+            }
+
+            try
+            {
+                var login = ApiGuard.Require(await backend.PostAsync<
+                    AccountLoginRequest,
+                    AccountLoginResultDto>(
+                    "api/v1/auth/login",
+                    new AccountLoginRequest(
+                        account,
+                        password,
+                        deviceId,
+                        machineName,
+                        appVersion),
+                    cancellationToken));
+                if (string.IsNullOrWhiteSpace(login.AccessToken))
+                    throw new InvalidOperationException("Local Server did not issue a valid account session.");
+
+                backend.SetAccountToken(login.AccessToken);
+                var local = ApiGuard.Require(await backend.GetAsync<CurrentAccountDto>(
+                    "api/v1/auth/me",
+                    cancellationToken));
+
+                return new(
+                    local,
+                    login.AccessToken,
+                    AuthSessionAuthority.LocalServer);
+            }
+            catch
+            {
+                backend.SetAccountToken(null);
+                await localServer.StopOwnedAsync(CancellationToken.None);
+                throw;
+            }
+        }
+
         var cloudIdentity = await publicCloud.AuthenticateAccountAsync(
             account,
             password,
