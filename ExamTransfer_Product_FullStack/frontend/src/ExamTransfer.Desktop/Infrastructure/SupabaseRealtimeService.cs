@@ -12,13 +12,17 @@ public sealed class SupabaseRealtimeService : IAsyncDisposable
     private const int MaximumReconnectAttempts = 8;
     private readonly IPublicCloudRuntimeOptionsProvider optionsProvider;
     private readonly SemaphoreSlim sendGate = new(1, 1);
+    private readonly PublicCloudStudentNotificationTransport studentNotifications = new();
     private CancellationTokenSource? stopping;
     private ClientWebSocket? socket;
     private Task? loop;
     private Guid sessionId;
+    private Guid participantId;
     private string deviceId = string.Empty;
     private ISupabaseAccessTokenProvider? accessTokenProvider;
     private Func<CancellationToken, Task>? refreshSnapshot;
+    private Func<long, Guid?, int, CancellationToken,
+        Task<IReadOnlyList<StudentNotificationEventDto>>>? fetchNotifications;
     private long reference;
 
     public bool IsConnected => socket?.State == WebSocketState.Open;
@@ -35,17 +39,23 @@ public sealed class SupabaseRealtimeService : IAsyncDisposable
 
     public Task StartAsync(
         Guid session,
+        Guid participant,
         string device,
         ISupabaseAccessTokenProvider tokenProvider,
         Func<CancellationToken, Task> snapshotRefresh,
+        Func<long, Guid?, int, CancellationToken,
+            Task<IReadOnlyList<StudentNotificationEventDto>>> notificationCatchUp,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         Stop();
         sessionId = session;
+        participantId = participant;
+        studentNotifications.SetScope(session, participant);
         deviceId = device;
         accessTokenProvider = tokenProvider;
         refreshSnapshot = snapshotRefresh;
+        fetchNotifications = notificationCatchUp;
         stopping = new CancellationTokenSource();
         loop = RunAsync(stopping.Token);
         return Task.CompletedTask;
@@ -109,9 +119,20 @@ public sealed class SupabaseRealtimeService : IAsyncDisposable
                     }, cancellationToken);
                 }
 
+                var bufferedFrames = await JoinStudentNotificationsAsync(
+                    token,
+                    cancellationToken);
+
                 retry = 0;
                 if (refreshSnapshot is not null)
                     await refreshSnapshot(cancellationToken);
+                if (fetchNotifications is not null)
+                    await studentNotifications.CatchUpAsync(
+                        fetchNotifications,
+                        PublishStudentNotification,
+                        cancellationToken);
+                foreach (var frame in bufferedFrames)
+                    ProcessIncomingMessage(frame);
                 if (connectedBefore)
                     EventReceived?.Invoke(this, "Reconnected");
                 connectedBefore = true;
@@ -184,17 +205,7 @@ public sealed class SupabaseRealtimeService : IAsyncDisposable
                 var json = Encoding.UTF8.GetString(message.GetBuffer(), 0, checked((int)message.Length));
                 if (TryParseAuthFailure(json, out var expired))
                     throw new SupabaseRealtimeAuthException(expired);
-                if (!TryParseBroadcast(
-                        json,
-                        sessionId,
-                        deviceId,
-                        out var notification,
-                        out var eventName))
-                    continue;
-                if (notification is not null)
-                    NotificationReceived?.Invoke(this, notification!);
-                else if (eventName is not null)
-                    EventReceived?.Invoke(this, eventName);
+                ProcessIncomingMessage(json);
             }
         }
         finally
@@ -210,6 +221,148 @@ public sealed class SupabaseRealtimeService : IAsyncDisposable
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(20));
         while (await timer.WaitForNextTickAsync(cancellationToken))
             await SendFrameAsync("phoenix", "heartbeat", new { }, cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<string>> JoinStudentNotificationsAsync(
+        string accessToken,
+        CancellationToken cancellationToken)
+    {
+        var bufferedFrames = new List<string>();
+        var topic = $"realtime:student-notifications:{sessionId}:{participantId}";
+        var joinReference = await SendFrameAsync(
+            topic,
+            "phx_join",
+            new
+            {
+                config = new
+                {
+                    broadcast = new { self = false, ack = false },
+                    presence = new { enabled = false },
+                    postgres_changes = new[]
+                    {
+                        new
+                        {
+                            @event = "INSERT",
+                            schema = "public",
+                            table = "student_notification_events",
+                            filter = $"session_id=eq.{sessionId}"
+                        }
+                    }
+                },
+                access_token = accessToken
+            },
+            cancellationToken);
+
+        while (true)
+        {
+            var json = await ReceiveTextMessageAsync(cancellationToken);
+            if (TryParseAuthFailure(json, out var expired))
+                throw new SupabaseRealtimeAuthException(expired);
+            if (TryParseJoinReply(json, topic, joinReference, out var accepted))
+            {
+                if (!accepted)
+                    throw new WebSocketException("Supabase rejected the student notification subscription.");
+                return bufferedFrames;
+            }
+            bufferedFrames.Add(json);
+        }
+    }
+
+    private async Task<string> ReceiveTextMessageAsync(CancellationToken cancellationToken)
+    {
+        var activeSocket = socket
+            ?? throw new WebSocketException("Supabase Realtime socket is missing.");
+        var buffer = new byte[32 * 1024];
+        using var message = new MemoryStream();
+        WebSocketReceiveResult result;
+        do
+        {
+            result = await activeSocket.ReceiveAsync(buffer, cancellationToken);
+            if (result.MessageType == WebSocketMessageType.Close)
+                throw new WebSocketException("Supabase Realtime connection closed during subscription.");
+            message.Write(buffer, 0, result.Count);
+        }
+        while (!result.EndOfMessage);
+        return Encoding.UTF8.GetString(message.GetBuffer(), 0, checked((int)message.Length));
+    }
+
+    private void ProcessIncomingMessage(string json)
+    {
+        if (studentNotifications.TryAcceptRealtime(json, out var studentNotification)
+            && studentNotification is not null)
+        {
+            PublishStudentNotification(studentNotification);
+            return;
+        }
+        if (!TryParseBroadcast(
+                json,
+                sessionId,
+                deviceId,
+                out var notification,
+                out var eventName))
+            return;
+        if (notification is not null)
+            NotificationReceived?.Invoke(this, notification);
+        else if (eventName is not null)
+            EventReceived?.Invoke(this, eventName);
+    }
+
+    private void PublishStudentNotification(StudentRealtimeNotification notification)
+    {
+        NotificationReceived?.Invoke(this, notification);
+        EventReceived?.Invoke(this, notification.EventName);
+    }
+
+    public static bool TryParseJoinReply(
+        string json,
+        string expectedTopic,
+        string expectedReference,
+        out bool accepted)
+    {
+        accepted = false;
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            string? topic;
+            string? eventName;
+            string? reference;
+            JsonElement payload;
+            if (root.ValueKind == JsonValueKind.Array && root.GetArrayLength() >= 5)
+            {
+                reference = root[1].GetString();
+                topic = root[2].GetString();
+                eventName = root[3].GetString();
+                payload = root[4];
+            }
+            else if (root.ValueKind == JsonValueKind.Object
+                     && root.TryGetProperty("topic", out var topicElement)
+                     && root.TryGetProperty("event", out var eventElement)
+                     && root.TryGetProperty("ref", out var referenceElement)
+                     && root.TryGetProperty("payload", out payload))
+            {
+                topic = topicElement.GetString();
+                eventName = eventElement.GetString();
+                reference = referenceElement.GetString();
+            }
+            else
+            {
+                return false;
+            }
+            if (topic != expectedTopic
+                || eventName != "phx_reply"
+                || reference != expectedReference
+                || payload.ValueKind != JsonValueKind.Object
+                || !payload.TryGetProperty("status", out var status))
+                return false;
+            accepted = status.GetString() == "ok";
+            return true;
+        }
+        catch (JsonException)
+        {
+            accepted = false;
+            return false;
+        }
     }
 
     public static bool TryParseBroadcast(
@@ -380,7 +533,7 @@ public sealed class SupabaseRealtimeService : IAsyncDisposable
         CancellationToken cancellationToken) =>
         SendFrameAsync("realtime:" + topic, eventName, payload, cancellationToken);
 
-    private async Task SendFrameAsync(
+    private async Task<string> SendFrameAsync(
         string topic,
         string eventName,
         object payload,
@@ -388,16 +541,18 @@ public sealed class SupabaseRealtimeService : IAsyncDisposable
     {
         if (socket?.State != WebSocketState.Open)
             throw new InvalidOperationException("Supabase Realtime is not connected.");
+        var nextReference = Interlocked.Increment(ref reference).ToString();
         var bytes = JsonSerializer.SerializeToUtf8Bytes(new
         {
             topic,
             @event = eventName,
             payload,
-            @ref = Interlocked.Increment(ref reference).ToString()
+            @ref = nextReference
         });
         await sendGate.WaitAsync(cancellationToken);
         try { await socket.SendAsync(bytes, WebSocketMessageType.Text, true, cancellationToken); }
         finally { sendGate.Release(); }
+        return nextReference;
     }
 
     public void Stop()
@@ -411,6 +566,7 @@ public sealed class SupabaseRealtimeService : IAsyncDisposable
         loop = null;
         accessTokenProvider = null;
         refreshSnapshot = null;
+        fetchNotifications = null;
     }
 
     public ValueTask DisposeAsync()

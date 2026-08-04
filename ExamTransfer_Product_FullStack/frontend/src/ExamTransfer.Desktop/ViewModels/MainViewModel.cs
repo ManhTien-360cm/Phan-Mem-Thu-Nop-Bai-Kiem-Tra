@@ -39,6 +39,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         AppServices.StudentExamFlow.NavigationRequested += OnStudentExamNavigationRequested;
         AppServices.StudentRealtime.EventReceived += OnStudentRealtimeEvent;
         AppServices.StudentRealtime.NotificationReceived += OnStudentRealtimeNotification;
+        AppServices.PublicCloud.SessionChanged += OnPublicCloudSessionChanged;
         CurrentPage = CreateLoginPage();
         FrontendLogger.SetContext("Login", "Auth");
         RestoreAuthAsync().SafeFireAndForget("MainViewModel.RestoreAuthAsync");
@@ -231,17 +232,26 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                     "RESTORED_AUTH_ORGANIZATION_MISMATCH");
 
             CurrentAccountDto current;
+            var effectiveAccessToken = restored.AccessToken;
+            var effectiveRefreshToken = restored.RefreshToken;
             if (restored.Authority == AuthSessionAuthority.Supabase)
             {
                 if (restored.Account.Role != UserRole.Student
                     || string.IsNullOrWhiteSpace(restored.Account.ProviderUserId)
-                    || !AppServices.PublicCloud.TryRestoreAccessToken(
+                    || !AppServices.PublicCloud.TryRestoreSession(
                         restored.AccessToken,
+                        restored.RefreshToken,
                         restored.Account.ProviderUserId,
                         restored.Account.ExpiresAtUtc))
                     throw new InvalidOperationException("OFFLINE_AUTH_CACHE_INVALID");
                 api.SetAccountToken(null);
-                current = restored.Account;
+                var cloudSession = await AppServices.PublicCloud
+                    .RestoreAuthenticatedAccountAsync(
+                        restored.Account.DeviceId,
+                        CancellationToken.None);
+                current = cloudSession.Account;
+                effectiveAccessToken = cloudSession.AccessToken;
+                effectiveRefreshToken = cloudSession.RefreshToken;
             }
             else
             {
@@ -270,8 +280,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             {
                 authState.SetAuthenticated(
                     current,
-                    restored.AccessToken,
-                    restored.Authority);
+                    effectiveAccessToken,
+                    restored.Authority,
+                    effectiveRefreshToken);
                 CompleteAuthenticatedShell();
             });
         }
@@ -315,6 +326,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             : (UserRole?)null;
         try
         {
+            if (authState.IsStudent && AppServices.PublicCloud.Authenticated)
+                await AppServices.PublicCloud.LogoutAsync();
+
             var deviceId = authState.CurrentAccount?.DeviceId;
             if (api.HasTrustedAccountToken && !string.IsNullOrWhiteSpace(deviceId))
             {
@@ -349,7 +363,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         accountHeartbeatCts?.Cancel();
         accountHeartbeatCts?.Dispose();
-        if (!authState.IsTeacher || authState.CurrentAccount is null) return;
+        if (authState.CurrentAccount is null) return;
 
         accountHeartbeatCts = new CancellationTokenSource();
         var token = accountHeartbeatCts.Token;
@@ -374,8 +388,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 catch (Exception ex)
                 {
                     FrontendLogger.Log(ex, "MainViewModel.AccountHeartbeat");
-                    await RunOnUiAsync(() => ClearAuthToLogin());
-                    break;
+                    if (authState.IsTeacher)
+                    {
+                        await RunOnUiAsync(() => ClearAuthToLogin());
+                        break;
+                    }
                 }
             }
         }, token);
@@ -404,6 +421,31 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     }
 
     private LoginViewModel CreateLoginPage() => new(api, authState, OnAuthenticatedAsync);
+
+    private void OnPublicCloudSessionChanged(
+        object? sender,
+        ExamTransfer.Desktop.Infrastructure.SupabaseAuthSessionChangedEventArgs session)
+    {
+        if (!authState.IsStudent)
+            return;
+
+        void Persist()
+        {
+            if (!authState.UpdateSupabaseSession(
+                    session.AccessToken,
+                    session.RefreshToken,
+                    session.ExpiresAtUtc))
+                FrontendLogger.LogMessage(
+                    "Supabase refresh session was rejected by the local identity binding.",
+                    "MainViewModel.PublicCloudSessionChanged");
+        }
+
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess())
+            dispatcher.BeginInvoke(Persist);
+        else
+            Persist();
+    }
 
     private ChangePasswordViewModel CreatePasswordChangePage() =>
         new(api, authState, OnPasswordChangedAsync);
@@ -676,6 +718,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         AppServices.StudentExamFlow.NavigationRequested -= OnStudentExamNavigationRequested;
         AppServices.StudentRealtime.EventReceived -= OnStudentRealtimeEvent;
         AppServices.StudentRealtime.NotificationReceived -= OnStudentRealtimeNotification;
+        AppServices.PublicCloud.SessionChanged -= OnPublicCloudSessionChanged;
         DisposePage(CurrentPage);
     }
 }

@@ -106,6 +106,7 @@ public sealed class QuizProjectionOutbox(IOutboxService outbox)
         id = x.Id,
         session_id = x.SessionId,
         participant_id = x.ParticipantId,
+        attempt_number = x.AttemptNumber,
         exam_version = x.ExamVersion,
         result_policy = x.ResultPolicySnapshot.ToString(),
         status = x.Status.ToString(),

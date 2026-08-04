@@ -88,6 +88,7 @@ public sealed class CloudOptions
     // PublishableKey is the preferred name for sb_publishable_* keys. AnonKey
     // is retained as a migration alias for older runtime configuration files.
     public string? PublishableKey { get; set; }
+    public string? SupabasePublishableKey { get; set; }
     public string? AnonKey { get; set; }
     public string? OrganizationId { get; set; }
 
@@ -109,7 +110,11 @@ public sealed class CloudOptions
     public bool PersistUserSession { get; set; } = true;
 
     public string? EffectivePublishableKey =>
-        !string.IsNullOrWhiteSpace(PublishableKey) ? PublishableKey : AnonKey;
+        !string.IsNullOrWhiteSpace(PublishableKey)
+            ? PublishableKey
+            : !string.IsNullOrWhiteSpace(SupabasePublishableKey)
+                ? SupabasePublishableKey
+                : AnonKey;
 
     public string? ResolveSecretKey() =>
         System.Environment.GetEnvironmentVariable(SecretKeyEnvironmentVariable)

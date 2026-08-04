@@ -1,4 +1,5 @@
 using System.IO;
+using System.Text.Json;
 using ExamTransfer.Desktop.Services;
 using ExamTransfer.Desktop.ViewModels;
 using ExamTransfer.Shared.Contracts;
@@ -63,6 +64,7 @@ public sealed class DashboardCountdownTests
         await viewModel.InitializeAsync(CancellationToken.None);
 
         var card = Assert.IsType<ActiveSessionCard>(viewModel.ActiveSession);
+        Assert.Equal(status, card.Status);
         Assert.Equal(expectedText, card.StatusDisplayText);
         Assert.False(card.IsTerminal);
         Assert.True(card.IsCountdownVisible);
@@ -77,13 +79,41 @@ public sealed class DashboardCountdownTests
     }
 
     [Fact]
-    public async Task NoRecentSession_HasNoCardAndDoesNotStartTicker()
+    public async Task ActiveProjection_WinsWhenFirstRecentSessionIsFinished()
     {
         var source = new FakeMonotonicTimeSource();
         var clock = new ServerClock(source);
         var ticker = new FakeCountdownTicker();
         var serverUtc = new DateTimeOffset(2026, 7, 25, 5, 0, 0, TimeSpan.Zero);
-        var api = new RecordingBackendClient(serverUtc, sessionStatus: null);
+        var api = new RecordingBackendClient(
+            serverUtc,
+            SessionStatus.InProgress,
+            serverUtc.AddSeconds(100),
+            SessionStatus.Finished);
+        using var viewModel = new DashboardViewModel(api, clock, ticker);
+
+        await viewModel.InitializeAsync(CancellationToken.None);
+
+        var active = Assert.IsType<ActiveSessionCard>(viewModel.ActiveSession);
+        Assert.Equal(SessionStatus.InProgress, active.Status);
+        Assert.True(ticker.IsRunning);
+        var history = Assert.Single(viewModel.Activities);
+        Assert.Equal("History session", history.Title);
+        Assert.Contains("HISTORY", history.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task NullActiveProjection_DoesNotFallbackToFinishedHistoryAndStopsTicker()
+    {
+        var source = new FakeMonotonicTimeSource();
+        var clock = new ServerClock(source);
+        var ticker = new FakeCountdownTicker();
+        var serverUtc = new DateTimeOffset(2026, 7, 25, 5, 0, 0, TimeSpan.Zero);
+        var api = new RecordingBackendClient(
+            serverUtc,
+            sessionStatus: null,
+            recentSessionStatus: SessionStatus.Finished);
+        ticker.Start();
         using var viewModel = new DashboardViewModel(api, clock, ticker);
 
         await viewModel.InitializeAsync(CancellationToken.None);
@@ -91,6 +121,50 @@ public sealed class DashboardCountdownTests
         Assert.Null(viewModel.ActiveSession);
         Assert.False(viewModel.HasActiveSession);
         Assert.False(ticker.IsRunning);
+        Assert.Equal("History session", Assert.Single(viewModel.Activities).Title);
+    }
+
+    [Fact]
+    public async Task LegacyDashboardPayloadWithoutActiveSession_DeserializesAsNullWithoutFallback()
+    {
+        var source = new FakeMonotonicTimeSource();
+        var clock = new ServerClock(source);
+        var ticker = new FakeCountdownTicker();
+        var serverUtc = new DateTimeOffset(2026, 7, 25, 5, 0, 0, TimeSpan.Zero);
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var legacyJson = JsonSerializer.Serialize(
+            new
+            {
+                classCount = 1,
+                examCount = 1,
+                activeSessionCount = 0,
+                pendingGradingCount = 0,
+                storageBytes = 0,
+                recentSessions = new[]
+                {
+                    DashboardSession(
+                        serverUtc,
+                        SessionStatus.Finished,
+                        "History session",
+                        "HISTORY")
+                },
+                warnings = Array.Empty<string>()
+            },
+            options);
+        var dashboard = JsonSerializer.Deserialize<DashboardSummaryDto>(legacyJson, options);
+        var api = new RecordingBackendClient(serverUtc, sessionStatus: null)
+        {
+            DashboardResponse = dashboard
+        };
+        using var viewModel = new DashboardViewModel(api, clock, ticker);
+
+        await viewModel.InitializeAsync(CancellationToken.None);
+
+        Assert.NotNull(dashboard);
+        Assert.Null(dashboard.ActiveSession);
+        Assert.Null(viewModel.ActiveSession);
+        Assert.False(ticker.IsRunning);
+        Assert.Equal("History session", Assert.Single(viewModel.Activities).Title);
     }
 
     [Fact]
@@ -162,6 +236,28 @@ public sealed class DashboardCountdownTests
         Assert.Equal(1, api.DashboardRequests);
     }
 
+    private static SessionSummaryDto DashboardSession(
+        DateTimeOffset serverUtc,
+        SessionStatus status,
+        string title,
+        string roomCode,
+        DateTimeOffset? effectiveDeadlineUtc = null) =>
+        new(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            title,
+            roomCode,
+            status,
+            serverUtc,
+            serverUtc.AddMinutes(-1),
+            status is SessionStatus.Finished or SessionStatus.Cancelled
+                ? serverUtc
+                : null,
+            effectiveDeadlineUtc,
+            new SessionCountsDto(10, 0, 10, 8, 2, 0, 0),
+            1,
+            "v1");
+
     private static string FindFile(params string[] segments)
     {
         var current = new DirectoryInfo(AppContext.BaseDirectory);
@@ -207,9 +303,11 @@ internal sealed class FakeCountdownTicker : ICountdownTicker
 internal sealed class RecordingBackendClient(
     DateTimeOffset serverUtc,
     SessionStatus? sessionStatus = SessionStatus.InProgress,
-    DateTimeOffset? effectiveDeadlineUtc = null) : IBackendClient
+    DateTimeOffset? effectiveDeadlineUtc = null,
+    SessionStatus? recentSessionStatus = null) : IBackendClient
 {
     public int DashboardRequests { get; private set; }
+    public DashboardSummaryDto? DashboardResponse { get; init; }
     public QuizAttemptDto? QuizAttemptResponse { get; init; }
     public ClassDetailDto? ClassDetailResponse { get; init; }
     public ExamSummaryDto? ExamSummaryResponse { get; init; }
@@ -219,6 +317,7 @@ internal sealed class RecordingBackendClient(
     public IReadOnlyList<ClassSummaryDto>? ClassResponses { get; init; }
     public IReadOnlyList<ExamSummaryDto>? ExamResponses { get; init; }
     public IReadOnlyList<SessionSummaryDto>? SessionResponses { get; init; }
+    public Queue<CloudProjectionReadinessView> ProjectionResponses { get; } = [];
     public List<string> PostPaths { get; } = [];
     public List<object?> PostRequests { get; } = [];
     public List<string> PutPaths { get; } = [];
@@ -229,6 +328,12 @@ internal sealed class RecordingBackendClient(
     public Task<ApiResponse<DashboardSummaryDto>?> GetDashboardAsync(CancellationToken ct = default)
     {
         DashboardRequests++;
+        if (DashboardResponse is not null)
+        {
+            return Task.FromResult<ApiResponse<DashboardSummaryDto>?>(
+                ApiResponse<DashboardSummaryDto>.Ok(DashboardResponse, "test"));
+        }
+
         IReadOnlyList<SessionSummaryDto> sessions = sessionStatus is { } status
             ?
             [
@@ -247,10 +352,50 @@ internal sealed class RecordingBackendClient(
                     "v1")
             ]
             : [];
+        var activeSession = sessions.FirstOrDefault();
+        IReadOnlyList<SessionSummaryDto> recentSessions = recentSessionStatus is { } recentStatus
+            ?
+            [
+                CreateDashboardSession(
+                    recentStatus,
+                    "History session",
+                    "HISTORY",
+                    effectiveDeadlineUtc)
+            ]
+            : [];
         return Task.FromResult<ApiResponse<DashboardSummaryDto>?>(ApiResponse<DashboardSummaryDto>.Ok(
-            new DashboardSummaryDto(1, 1, sessions.Count, 0, 0, sessions, []),
+            new DashboardSummaryDto(
+                1,
+                1,
+                activeSession is null ? 0 : 1,
+                0,
+                0,
+                recentSessions,
+                [],
+                activeSession),
             "test"));
     }
+
+    private SessionSummaryDto CreateDashboardSession(
+        SessionStatus status,
+        string title,
+        string roomCode,
+        DateTimeOffset? deadlineUtc) =>
+        new(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            title,
+            roomCode,
+            status,
+            serverUtc,
+            serverUtc.AddMinutes(-1),
+            status is SessionStatus.Finished or SessionStatus.Cancelled
+                ? serverUtc
+                : null,
+            deadlineUtc,
+            new SessionCountsDto(10, 0, 10, 8, 2, 0, 0),
+            1,
+            "v1");
 
     public bool TrySetBaseAddress(string hostOrUrl, int port, out string? error) { error = null; return true; }
     public Task<ApiResponse<SystemStatusDto>?> GetSystemStatusAsync(CancellationToken ct = default) => Task.FromResult<ApiResponse<SystemStatusDto>?>(null);
@@ -294,6 +439,9 @@ internal sealed class RecordingBackendClient(
         if (ParticipantResponse is not null && typeof(T) == typeof(ParticipantDto))
             return Task.FromResult<ApiResponse<T>?>(
                 ApiResponse<T>.Ok((T)(object)ParticipantResponse, "test"));
+        if (typeof(T) == typeof(CloudProjectionReadinessView) && ProjectionResponses.Count > 0)
+            return Task.FromResult<ApiResponse<T>?>(
+                ApiResponse<T>.Ok((T)(object)ProjectionResponses.Dequeue(), "test"));
         return Task.FromResult<ApiResponse<T>?>(null);
     }
     public Task<ApiResponse<TResponse>?> PostAsync<TRequest, TResponse>(string path, TRequest request, CancellationToken ct = default)
@@ -328,6 +476,9 @@ internal sealed class RecordingBackendClient(
         if (ExamDetailResponse is not null && typeof(TResponse) == typeof(ExamDetailDto))
             return Task.FromResult<ApiResponse<TResponse>?>(
                 ApiResponse<TResponse>.Ok((TResponse)(object)ExamDetailResponse, "test"));
+        if (SessionDetailResponse is not null && typeof(TResponse) == typeof(SessionDetailDto))
+            return Task.FromResult<ApiResponse<TResponse>?>(
+                ApiResponse<TResponse>.Ok((TResponse)(object)SessionDetailResponse, "test"));
         return Task.FromResult<ApiResponse<TResponse>?>(null);
     }
     public Task<ApiResponse<TResponse>?> DeleteAsync<TResponse>(string path, CancellationToken ct = default) => Task.FromResult<ApiResponse<TResponse>?>(null);

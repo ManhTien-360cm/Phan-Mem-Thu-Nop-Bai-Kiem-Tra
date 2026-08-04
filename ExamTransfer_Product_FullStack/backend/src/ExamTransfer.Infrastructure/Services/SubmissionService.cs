@@ -12,7 +12,7 @@ using Microsoft.Extensions.Options;
 
 namespace ExamTransfer.Infrastructure.Services;
 
-public sealed class SubmissionService(AppDbContext db, IStoragePaths paths, IChunkStorage chunks, IReceiptSigner receipts, IAuditService audit, IOutboxService outbox, IRealtimePublisher realtime, IOptions<ExamTransferOptions> options, SubmissionMutationDispatcher submissionMutations) : ISubmissionService
+public sealed class SubmissionService(AppDbContext db, IStoragePaths paths, IChunkStorage chunks, IReceiptSigner receipts, IAuditService audit, IOutboxService outbox, IRealtimePublisher realtime, IOptions<ExamTransferOptions> options, SubmissionMutationDispatcher submissionMutations, ICloudAdapter? cloud = null) : ISubmissionService
 {
     private readonly ExamTransferOptions _options = options.Value;
     private readonly SubmissionMutationDispatcher _submissionMutations = submissionMutations;
@@ -209,7 +209,9 @@ public sealed class SubmissionService(AppDbContext db, IStoragePaths paths, IChu
                     await audit.WriteAsync("SubmissionArchiveRejected", nameof(SubmissionFile), file.Id.ToString(), submission.SessionId, null, new { file.OriginalName, reason = ErrorCodes.SubmissionArchiveRequired }, cancellationToken);
                     throw new ApiException(ErrorCodes.SubmissionArchiveRequired, "Bài làm phải là file nén hợp lệ và chữ ký file phải khớp phần mở rộng.", 422);
                 }
-                file.RelativePath = Path.GetRelativePath(paths.RootPath, finalPath); file.TransferStatus = TransferStatus.Completed;
+                file.RelativePath = Path.GetRelativePath(paths.RootPath, finalPath);
+                file.TransferStatus = TransferStatus.Completed;
+                file.ArchiveVerified = true;
                 completedFiles.Add(ToDescriptor(file));
             }
         }
@@ -221,7 +223,12 @@ public sealed class SubmissionService(AppDbContext db, IStoragePaths paths, IChu
             await transaction.CommitAsync(cancellationToken);
             throw;
         }
-        var receivedAt = DateTimeOffset.UtcNow; submission.ServerReceivedAtUtc = receivedAt; submission.IsLate = receivedAt > submission.DeadlineUtc; submission.Status = submission.IsLate ? SubmissionStatus.LateSubmitted : SubmissionStatus.Submitted;
+        var receivedAt = DateTimeOffset.UtcNow;
+        submission.ServerReceivedAtUtc = receivedAt;
+        submission.ComputedIsLate = receivedAt > submission.DeadlineUtc;
+        submission.LateOverride = null;
+        submission.IsLate = submission.ComputedIsLate;
+        submission.Status = submission.IsLate ? SubmissionStatus.LateSubmitted : SubmissionStatus.Submitted;
         submission.Participant.SubmissionStatus = submission.Status; submission.ClientNote = request.ClientNote;
         var previousOfficial = await db.SubmissionsSet.Where(x => x.ParticipantId == submission.ParticipantId && x.IsOfficial).ToListAsync(cancellationToken);
         foreach (var old in previousOfficial) old.IsOfficial = false;
@@ -297,16 +304,106 @@ public sealed class SubmissionService(AppDbContext db, IStoragePaths paths, IChu
             cancellationToken);
     }
 
-    public async Task<(string Path, string MimeType, string DownloadName)> GetFileAsync(Guid submissionId, Guid fileId, CancellationToken cancellationToken)
+    public async Task<SubmissionSummaryDto> SetLateOverrideAsync(
+        Guid submissionId,
+        SetSubmissionLateOverrideRequest request,
+        Guid actorId,
+        string? actorOrganizationId,
+        CancellationToken cancellationToken)
     {
-        var file = await db.SubmissionFilesSet.AsNoTracking().FirstOrDefaultAsync(x => x.Id == fileId && x.SubmissionId == submissionId && x.TransferStatus == TransferStatus.Completed, cancellationToken) ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy file.", 404);
-        var full = Path.GetFullPath(Path.Combine(paths.RootPath, file.RelativePath));
-        if (!full.StartsWith(Path.GetFullPath(paths.RootPath), StringComparison.OrdinalIgnoreCase) || !File.Exists(full)) throw new ApiException(ErrorCodes.NotFound, "File vật lý không tồn tại.", 404);
-        return (full, file.MimeType, file.OriginalName);
+        if (request.MutationRequestId == Guid.Empty || string.IsNullOrWhiteSpace(request.Reason))
+            throw new ApiException(ErrorCodes.ValidationFailed, "Cần nhập lý do và MutationRequestId hợp lệ.");
+
+        var actor = await db.UsersSet.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.Id == actorId, cancellationToken);
+        var submission = await db.SubmissionsSet
+            .Include(x => x.Files)
+            .Include(x => x.Participant)
+            .Include(x => x.Session).ThenInclude(x => x.Exam)
+            .SingleOrDefaultAsync(x => x.Id == submissionId, cancellationToken)
+            ?? throw new ApiException(ErrorCodes.NotFound, "Không tìm thấy bài nộp.", 404);
+
+        if (actor is null || !actor.IsActive || actor.Role is not (UserRole.Teacher or UserRole.Admin)
+            || string.IsNullOrWhiteSpace(actorOrganizationId)
+            || !string.Equals(actor.OrganizationId, actorOrganizationId, StringComparison.Ordinal)
+            || (!string.Equals(actor.Role.ToString(), nameof(UserRole.Admin), StringComparison.Ordinal)
+                && submission.Session.Exam.CreatedBy != actor.Id))
+            throw new ApiException(ErrorCodes.Forbidden, "Không được phép điều chỉnh trạng thái nộp muộn.", 403);
+
+        var ownerOrganization = submission.Session.Exam.CreatedBy.HasValue
+            ? await db.UsersSet.AsNoTracking()
+                .Where(x => x.Id == submission.Session.Exam.CreatedBy.Value && x.IsActive)
+                .Select(x => x.OrganizationId)
+                .SingleOrDefaultAsync(cancellationToken)
+            : null;
+        if (string.IsNullOrWhiteSpace(ownerOrganization)
+            || !string.Equals(ownerOrganization, actorOrganizationId, StringComparison.Ordinal)
+            || !submission.IsOfficial
+            || submission.Status is not (SubmissionStatus.Submitted or SubmissionStatus.LateSubmitted))
+            throw new ApiException(ErrorCodes.InvalidStateTransition, "Bài nộp không đủ điều kiện điều chỉnh trạng thái muộn.", 409);
+
+        var before = new { submission.ComputedIsLate, submission.LateOverride, EffectiveIsLate = submission.IsLate };
+        if (submission.Session.AccessMode == SessionAccessMode.PublicCloud)
+        {
+            var result = await (cloud ?? throw new ApiException(ErrorCodes.CloudOffline, "PublicCloud chưa sẵn sàng.", 503))
+                .SetPublicSubmissionLateOverrideAsync(
+                    submission.Id,
+                    request.LateOverride,
+                    request.Reason.Trim(),
+                    request.MutationRequestId,
+                    cancellationToken);
+            submission.ComputedIsLate = result.ComputedIsLate;
+            submission.LateOverride = result.LateOverride;
+            submission.IsLate = result.EffectiveIsLate;
+            submission.Status = result.Status;
+            submission.Participant.SubmissionStatus = result.Status;
+            submission.CloudVersion = result.CloudVersion;
+            submission.CloudUpdatedAtUtc = result.UpdatedAtUtc;
+        }
+        else
+        {
+            submission.ComputedIsLate = submission.ServerReceivedAtUtc > submission.DeadlineUtc;
+            submission.LateOverride = request.LateOverride;
+            submission.IsLate = request.LateOverride ?? submission.ComputedIsLate;
+            submission.Status = submission.IsLate ? SubmissionStatus.LateSubmitted : SubmissionStatus.Submitted;
+            submission.Participant.SubmissionStatus = submission.Status;
+            submission.Participant.Session.Sequence++;
+            await outbox.EnqueueAsync(
+                "submissions",
+                submission.Id.ToString(),
+                "upsert",
+                ToCloud(submission),
+                cancellationToken: cancellationToken);
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+        await audit.WriteAsync(
+            "SubmissionLateOverrideChanged",
+            nameof(Submission),
+            submission.Id.ToString(),
+            submission.SessionId,
+            before,
+            new
+            {
+                ActorId = actorId,
+                RequestId = request.MutationRequestId,
+                Reason = request.Reason.Trim(),
+                submission.ComputedIsLate,
+                submission.LateOverride,
+                EffectiveIsLate = submission.IsLate
+            },
+            cancellationToken);
+        await realtime.PublishSessionAsync(
+            submission.SessionId,
+            RealtimeEvents.SubmissionAccepted,
+            submission.Participant.Session.Sequence,
+            new { submissionId = submission.Id, participantId = submission.ParticipantId, submission.IsLate },
+            cancellationToken);
+        return ToSummary(submission);
     }
 
     private InitSubmissionResponse ToInitResponse(Submission s) => new(s.Id, s.AttemptNumber, _options.Transfer.ChunkSizeBytes, s.Files.Select(f => new ChunkPlanDto(f.Id, f.TotalChunks, Enumerable.Range(0, f.TotalChunks).Except(chunks.ReadReceivedChunks(f.ReceivedChunksJson)).ToList())).ToList(), s.DeadlineUtc);
-    private SubmissionSummaryDto ToSummary(Submission s) => new(s.Id, s.SessionId, s.ParticipantId, s.Participant.StudentCode, s.Participant.DisplayName, s.AttemptNumber, s.Status, s.ClientSubmittedAtUtc, s.ServerReceivedAtUtc, s.DeadlineUtc, s.IsLate, s.ReceiptCode, s.IsOfficial, s.Files.Select(f => f.ToDto(chunks.ReadReceivedChunks(f.ReceivedChunksJson))).ToList());
+    private SubmissionSummaryDto ToSummary(Submission s) => new(s.Id, s.SessionId, s.ParticipantId, s.Participant.StudentCode, s.Participant.DisplayName, s.AttemptNumber, s.Status, s.ClientSubmittedAtUtc, s.ServerReceivedAtUtc, s.DeadlineUtc, s.IsLate, s.ReceiptCode, s.IsOfficial, s.Files.Select(f => f.ToDto(chunks.ReadReceivedChunks(f.ReceivedChunksJson))).ToList(), s.ComputedIsLate, s.LateOverride);
     private static FileDescriptorDto ToDescriptor(SubmissionFile f) => new(f.Id, f.OriginalName, f.SizeBytes, f.Sha256, f.MimeType, $"/api/v1/submissions/{f.SubmissionId}/files/{f.Id}/content");
     private static object ToCloud(Submission x) =>
         SubmissionMutationPayloads.ToCloud(x);

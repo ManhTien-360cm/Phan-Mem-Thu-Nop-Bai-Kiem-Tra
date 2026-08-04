@@ -105,14 +105,17 @@ public sealed class GradingCenterViewModel : ProductPageBase
                 "api/v1/grading/work-items", token));
             var submissions = ApiGuard.Require(await api.GetAsync<PagedResult<SubmissionSummaryDto>>(
                 "api/v1/grading/queue?page=1&pageSize=100", token));
-            var submissionsById = submissions.Items.ToDictionary(item => item.Id);
+            var submissionsById = submissions.Items
+                .GroupBy(item => item.Id)
+                .ToDictionary(g => g.Key, g => g.First());
             Queue.ReplaceWith(workItems.Items.Select(item =>
                 new EssaySubmissionReviewRow(
                     item,
                     submissionsById.GetValueOrDefault(item.Id))));
             SelectedWorkItem = selectedId.HasValue
                 ? Queue.FirstOrDefault(row => row.SubmissionId == selectedId && row.Type == selectedType)
-                : null;
+                    ?? Queue.FirstOrDefault()
+                : Queue.FirstOrDefault();
         });
 
     private void BeginDetailLoad(EssaySubmissionReviewRow? row)

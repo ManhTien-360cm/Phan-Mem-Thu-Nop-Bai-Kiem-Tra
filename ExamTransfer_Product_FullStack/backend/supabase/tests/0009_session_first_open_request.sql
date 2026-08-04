@@ -1,8 +1,8 @@
 begin;
 select plan(39);
 
-select is((select schema_version from public.examtransfer_cloud_meta where id=1), 23,
-  'session-first workflow remains compatible at schema version 22');
+select is((select schema_version from public.examtransfer_cloud_meta where id=1), 27,
+  'session-first workflow remains compatible at schema version 27');
 select has_column('public','exam_sessions','admission_mode',
   'session admission mode exists');
 select ok(exists(
@@ -193,11 +193,17 @@ select is((select value->>'admissionMode' from open19_values where key='timeline
 select is((select value->>'resubmitAllowed' from open19_values where key='timeline'),
   'false',
   'student timeline returns false resubmit authority');
+reset role;
 update public.session_participants
 set resubmit_allowed = true,
     cloud_version = private.next_public_cloud_version(),
     updated_at = pg_catalog.now()
 where id = (select (value->>'participantId')::uuid from open19_values where key='join');
+set local role authenticated;
+select set_config(
+  'request.jwt.claims',
+  '{"sub":"61000000-0000-0000-0000-000000000002","role":"authenticated"}',
+  true);
 update open19_values
 set value = public.get_public_student_timeline(
   '61300000-0000-0000-0000-000000000001')
@@ -205,11 +211,17 @@ where key = 'timeline';
 select is((select value->>'resubmitAllowed' from open19_values where key='timeline'),
   'true',
   'student timeline returns true resubmit authority');
+reset role;
 update public.session_participants
 set resubmit_allowed = false,
     cloud_version = private.next_public_cloud_version(),
     updated_at = pg_catalog.now()
 where id = (select (value->>'participantId')::uuid from open19_values where key='join');
+set local role authenticated;
+select set_config(
+  'request.jwt.claims',
+  '{"sub":"61000000-0000-0000-0000-000000000002","role":"authenticated"}',
+  true);
 select throws_ok($$select public.get_public_exam_manifest(
   '61300000-0000-0000-0000-000000000001')$$,
   '42501','PUBLIC_EXAM_MANIFEST_FORBIDDEN',

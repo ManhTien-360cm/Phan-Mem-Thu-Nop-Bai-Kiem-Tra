@@ -6,9 +6,13 @@ using System.Text.Json;
 
 namespace ExamTransfer.Desktop.Infrastructure;
 
-public sealed class RealtimeService(string baseUrl) : IRealtimeService, IAsyncDisposable
+public sealed class RealtimeService(
+    string baseUrl,
+    RealtimeAuthenticationMode authenticationMode = RealtimeAuthenticationMode.AccountBearer)
+    : IRealtimeService, IAsyncDisposable
 {
     private readonly RealtimeSessionSubscriptions subscriptions = new();
+    private readonly StudentNotificationRealtimeAdapter studentNotifications = new();
     private HubConnection? hub;
 
     public bool IsConnected => hub?.State == HubConnectionState.Connected;
@@ -31,7 +35,7 @@ public sealed class RealtimeService(string baseUrl) : IRealtimeService, IAsyncDi
         var connection = new HubConnectionBuilder()
             .WithUrl(baseUrl.TrimEnd('/') + ContractInfo.HubPath, options =>
             {
-                options.AccessTokenProvider = () => Task.FromResult(token);
+                ConfigureAuthentication(options, token, authenticationMode);
             })
             .WithAutomaticReconnect(new[]
             {
@@ -42,6 +46,32 @@ public sealed class RealtimeService(string baseUrl) : IRealtimeService, IAsyncDi
             })
             .Build();
         hub = connection;
+
+        var studentEventNames = Enum.GetValues<StudentNotificationEventType>()
+            .Select(value => value.ToString())
+            .ToHashSet(StringComparer.Ordinal);
+        foreach (var eventName in studentEventNames)
+        {
+            connection.On<JsonElement>(
+                eventName,
+                envelope =>
+                {
+                    if (!studentNotifications.TryAccept(envelope, out var notification)
+                        || notification is null)
+                        return;
+                    NotificationReceived?.Invoke(
+                        this,
+                        new StudentRealtimeNotification(
+                            notification.SessionId,
+                            notification.EventType.ToString(),
+                            notification.Revision,
+                            null,
+                            notification.ParticipantId,
+                            null,
+                            notification));
+                    EventReceived?.Invoke(this, notification.EventType.ToString());
+                });
+        }
 
         connection.On<RealtimeEnvelope<TimeExtendedEvent>>(
             RealtimeEvents.TimeExtended,
@@ -82,7 +112,8 @@ public sealed class RealtimeService(string baseUrl) : IRealtimeService, IAsyncDi
                      .Select(field => field.GetValue(null)?.ToString())
                      .Where(value => !string.IsNullOrWhiteSpace(value)
                           && value != RealtimeEvents.TimeExtended
-                          && value != RealtimeEvents.PublicCloudProjectionUpdated))
+                          && value != RealtimeEvents.PublicCloudProjectionUpdated
+                          && !studentEventNames.Contains(value!)))
         {
             connection.On<JsonElement>(eventName!, envelope =>
             {
@@ -150,6 +181,26 @@ public sealed class RealtimeService(string baseUrl) : IRealtimeService, IAsyncDi
         EventReceived?.Invoke(this, "Connected");
     }
 
+    internal static void ConfigureAuthentication(
+        Microsoft.AspNetCore.Http.Connections.Client.HttpConnectionOptions options,
+        string? token,
+        RealtimeAuthenticationMode mode)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        if (string.IsNullOrWhiteSpace(token))
+            return;
+
+        if (mode == RealtimeAuthenticationMode.ParticipantHeader)
+        {
+            // The Local Server authenticates participant connections from this
+            // header during SignalR negotiate as well as the WebSocket upgrade.
+            options.Headers["X-Exam-Session-Token"] = token.Trim();
+            return;
+        }
+
+        options.AccessTokenProvider = () => Task.FromResult<string?>(token.Trim());
+    }
+
     public async Task SubscribeSessionAsync(
         Guid sessionId,
         CancellationToken ct = default)
@@ -200,6 +251,12 @@ public sealed class RealtimeService(string baseUrl) : IRealtimeService, IAsyncDi
             hub = null;
         }
     }
+}
+
+public enum RealtimeAuthenticationMode
+{
+    AccountBearer,
+    ParticipantHeader
 }
 
 internal sealed class RealtimeSessionSubscriptions

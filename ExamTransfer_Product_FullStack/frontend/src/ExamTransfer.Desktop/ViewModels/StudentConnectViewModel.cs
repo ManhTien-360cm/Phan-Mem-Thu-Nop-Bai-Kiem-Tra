@@ -408,9 +408,9 @@ public sealed class StudentConnectViewModel : ProductPageBase
                 "TOKEN_SERVER_MISMATCH",
                 "Máy chủ phản hồi không khớp danh tính của phòng đã tìm thấy.");
 
+        api.SetParticipantToken(null); // Phải xóa participant token cũ TRƯỚC khi authenticate, tránh gửi token phòng cũ cùng với request join phòng mới
         await EnsureLocalAccountAsync(identity.ServerId, ct);
         state.Reset();
-        api.SetParticipantToken(null);
         Status = "Đang gửi yêu cầu tham gia...";
         var request = new JoinSessionRequest(
             requestedCode,
@@ -421,10 +421,27 @@ public sealed class StudentConnectViewModel : ProductPageBase
             Environment.MachineName,
             "1.0.0",
             Guid.NewGuid().ToString("N"));
-        var response = ApiGuard.Require(await api.PostAsync<JoinSessionRequest, JoinSessionResponse>(
-            "api/v1/sessions/join",
-            request,
-            ct));
+
+        ApiResponse<JoinSessionResponse>? joinResponse = null;
+        try
+        {
+            joinResponse = await api.PostAsync<JoinSessionRequest, JoinSessionResponse>(
+                "api/v1/sessions/join",
+                request,
+                ct);
+        }
+        catch (BackendApiException ex) when (ex.HttpStatusCode == 401)
+        {
+            // Token local expired on server, clear stale token and re-authenticate via transient credentials
+            api.SetAccountToken(null);
+            await EnsureLocalAccountAsync(identity.ServerId, ct);
+            joinResponse = await api.PostAsync<JoinSessionRequest, JoinSessionResponse>(
+                "api/v1/sessions/join",
+                request,
+                ct);
+        }
+
+        var response = ApiGuard.Require(joinResponse);
         state.ApplyJoin(response, request.RoomCode, request.StudentCode, request.DisplayName, SessionAccessMode.LanOnly, room.Room.ServerId);
         state.ExamId = room.Room.ExamId;
         state.AdmissionMode = room.Room.AdmissionMode;

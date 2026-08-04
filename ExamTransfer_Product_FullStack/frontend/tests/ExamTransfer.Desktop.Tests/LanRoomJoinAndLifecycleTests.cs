@@ -460,6 +460,67 @@ public sealed class LanRoomJoinAndLifecycleTests
     }
 
     [Fact]
+    public void LocalServerRuntime_MapsValidatedDesktopPublicCloudEnvironmentToChildConfiguration()
+    {
+        var organizationId = Guid.NewGuid();
+        var publishableKey = string.Concat("sb_", "publishable_test_only");
+        var values = new Dictionary<string, string?>
+        {
+            ["EXAMTRANSFER_SUPABASE_URL"] = "https://staging.example.supabase.co/",
+            ["EXAMTRANSFER_SUPABASE_PUBLISHABLE_KEY"] = publishableKey,
+            ["EXAMTRANSFER_ORGANIZATION_ID"] = organizationId.ToString()
+        };
+        var startInfo = new System.Diagnostics.ProcessStartInfo();
+
+        LocalServerRuntime.ApplyPublicCloudEnvironment(
+            startInfo,
+            name => values.GetValueOrDefault(name));
+
+        Assert.Equal("true", startInfo.Environment["Cloud__Enabled"]);
+        Assert.Equal(
+            "https://staging.example.supabase.co",
+            startInfo.Environment["Cloud__SupabaseUrl"]);
+        Assert.Equal(
+            publishableKey,
+            startInfo.Environment["Cloud__PublishableKey"]);
+        Assert.Equal(
+            publishableKey,
+            startInfo.Environment["Cloud__SupabasePublishableKey"]);
+        Assert.Equal(
+            organizationId.ToString(),
+            startInfo.Environment["Cloud__OrganizationId"]);
+        Assert.Equal(
+            CloudAccessModes.UserSession,
+            startInfo.Environment["Cloud__AccessMode"]);
+        Assert.DoesNotContain(
+            startInfo.Environment.Keys,
+            key => key.Contains("SECRET", StringComparison.OrdinalIgnoreCase)
+                || key.Contains("SERVICE", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void LocalServerRuntime_DoesNotForwardSecretOrIncompletePublicCloudConfiguration()
+    {
+        var values = new Dictionary<string, string?>
+        {
+            ["EXAMTRANSFER_SUPABASE_URL"] = "https://staging.example.supabase.co",
+            ["EXAMTRANSFER_SUPABASE_PUBLISHABLE_KEY"] = string.Concat("sb_", "secret_test_only"),
+            ["EXAMTRANSFER_ORGANIZATION_ID"] = Guid.NewGuid().ToString()
+        };
+        var startInfo = new System.Diagnostics.ProcessStartInfo();
+
+        LocalServerRuntime.ApplyPublicCloudEnvironment(
+            startInfo,
+            name => values.GetValueOrDefault(name));
+
+        Assert.False(startInfo.Environment.ContainsKey("Cloud__Enabled"));
+        Assert.False(startInfo.Environment.ContainsKey("Cloud__SupabaseUrl"));
+        Assert.False(startInfo.Environment.ContainsKey("Cloud__PublishableKey"));
+        Assert.False(startInfo.Environment.ContainsKey("Cloud__SupabasePublishableKey"));
+        Assert.False(startInfo.Environment.ContainsKey("Cloud__OrganizationId"));
+    }
+
+    [Fact]
     public async Task Lifecycle_StudentNonOwnerExit_DoesNotStopExistingPackagedServer()
     {
         using var layout = TeacherLayout();

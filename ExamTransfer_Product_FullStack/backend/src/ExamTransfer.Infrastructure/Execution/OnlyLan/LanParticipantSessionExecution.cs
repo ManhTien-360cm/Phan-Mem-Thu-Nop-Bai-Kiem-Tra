@@ -2,7 +2,9 @@ using ExamTransfer.Application;
 using ExamTransfer.Domain;
 using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Shared.Contracts;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace ExamTransfer.Infrastructure.Execution.OnlyLan;
@@ -14,7 +16,9 @@ public sealed class LanParticipantSessionExecution(
     IOutboxService outbox,
     IRealtimePublisher realtime,
     IOptions<ExamTransferOptions> options,
-    ILanAccessPolicy lanAccessPolicy)
+    ILanAccessPolicy lanAccessPolicy,
+    ILogger<LanParticipantSessionExecution>? logger = null,
+    IHttpContextAccessor? httpContextAccessor = null)
 {
     private readonly ExamTransferOptions _options = options.Value;
 
@@ -41,8 +45,26 @@ public sealed class LanParticipantSessionExecution(
                 "Phòng PublicCloud phải được tham gia qua RPC PublicCloud.",
                 409);
         if (session.Status != SessionStatus.Waiting || !session.AcceptingParticipants) throw new ApiException(ErrorCodes.InvalidStateTransition, "Phòng chưa mở hoặc đã khóa nhận người mới.", 409);
-        if (session.AccessMode == SessionAccessMode.LanOnly && !lanAccessPolicy.IsAllowed(ipAddress))
-            throw new ApiException(ErrorCodes.LanAccessDenied, "Thiết bị không nằm trong mạng nội bộ được phép của phòng thi.", 403);
+        if (session.AccessMode == SessionAccessMode.LanOnly)
+        {
+            var decision = lanAccessPolicy.Evaluate(ipAddress);
+            var traceId = httpContextAccessor?.HttpContext?.TraceIdentifier
+                ?? System.Diagnostics.Activity.Current?.TraceId.ToString()
+                ?? "unavailable";
+            logger?.Log(
+                decision.Allowed ? LogLevel.Information : LogLevel.Warning,
+                "LAN join access evaluated. RuntimeMode={RuntimeMode}; RemoteIp={RemoteIp}; EffectiveClientIp={EffectiveClientIp}; AllowedCidrs={AllowedCidrs}; MatchedRange={MatchedRange}; DeniedReason={DeniedReason}; SessionId={SessionId}; TraceId={TraceId}",
+                decision.RuntimeMode,
+                decision.RemoteIp ?? "unknown",
+                decision.EffectiveClientIp ?? "unknown",
+                decision.AllowedCidrs.Count == 0 ? "<none>" : string.Join(',', decision.AllowedCidrs),
+                decision.MatchedRange ?? "<none>",
+                decision.DeniedReason,
+                session.Id,
+                traceId);
+            if (!decision.Allowed)
+                throw new ApiException(ErrorCodes.LanAccessDenied, "Thiết bị không nằm trong mạng nội bộ được phép của phòng thi.", 403);
+        }
         if (session.AdmissionMode == SessionAdmissionMode.ClassMembersOnly)
         {
             if (!session.ClassId.HasValue)

@@ -45,7 +45,11 @@ public sealed class OpenSessionDiscoveryTests
         options.Server.PreferredIp = LanNetworkConfiguration.RunningInContainer
             ? "192.168.10.1"
             : LanNetworkConfiguration.GetActivePhysicalAddresses().First().ToString();
-        var controller = new DiscoveryController(db, new AllowLanPolicy(), Options.Create(options))
+        options.LanAccess.AllowedCidrs.Add($"{options.Server.PreferredIp}/32");
+        var controller = new DiscoveryController(
+            db,
+            new LanAccessPolicy(Options.Create(options)),
+            Options.Create(options))
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
         };

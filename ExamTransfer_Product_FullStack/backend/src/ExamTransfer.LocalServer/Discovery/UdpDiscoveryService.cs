@@ -2,6 +2,7 @@
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using ExamTransfer.Application;
 using ExamTransfer.Infrastructure;
 using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Infrastructure.Security;
@@ -59,6 +60,23 @@ public sealed class UdpDiscoveryService(
                             continue;
                         }
                         using var scope = scopeFactory.CreateScope();
+                        var lanAccessPolicy = scope.ServiceProvider.GetRequiredService<ILanAccessPolicy>();
+                        var decision = lanAccessPolicy.Evaluate(received.RemoteEndPoint.Address.ToString());
+                        if (!decision.Allowed)
+                        {
+                            state.LastErrorCode = ErrorCodes.LanAccessDenied;
+                            logger.LogWarning(
+                                "UDP discovery response suppressed. RuntimeMode={RuntimeMode}; RemoteIp={RemoteIp}; EffectiveClientIp={EffectiveClientIp}; AllowedCidrs={AllowedCidrs}; MatchedRange={MatchedRange}; DeniedReason={DeniedReason}; SessionId={SessionId}; TraceId={TraceId}",
+                                decision.RuntimeMode,
+                                decision.RemoteIp ?? "unknown",
+                                decision.EffectiveClientIp ?? "unknown",
+                                decision.AllowedCidrs.Count == 0 ? "<none>" : string.Join(',', decision.AllowedCidrs),
+                                decision.MatchedRange ?? "<none>",
+                                decision.DeniedReason,
+                                "<discovery>",
+                                request.RequestId);
+                            continue;
+                        }
                         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                         var endpoint = LanNetworkConfiguration.ResolveAdvertisedEndpoint(
                             options.Value,

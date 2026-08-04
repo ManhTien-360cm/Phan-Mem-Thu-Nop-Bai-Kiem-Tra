@@ -385,8 +385,8 @@ public sealed class QuizService(
     private static QuizAttemptDto ToStudentDto(QuizAttempt attempt)
     {
         var scoreVisible = attempt.Status == QuizAttemptStatus.Finalized
-            && (attempt.ResultPolicySnapshot == QuizResultPolicy.ShowAfterSubmission
-                || attempt.ReturnedAtUtc.HasValue);
+            && attempt.GradingStatus == GradingStatus.Returned
+            && attempt.ReturnedAtUtc.HasValue;
         return new(
             attempt.Id, attempt.SessionId, attempt.ParticipantId, attempt.Status, attempt.ExamVersion,
             attempt.StartedAtUtc, attempt.DeadlineUtc, attempt.FinalizedAtUtc,

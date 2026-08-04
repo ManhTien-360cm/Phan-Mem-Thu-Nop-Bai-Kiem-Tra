@@ -37,7 +37,7 @@ public sealed class QuizReviewPresentationModel
     public string EmptyStateText => "Bài trắc nghiệm chưa có câu hỏi.";
 }
 
-public sealed class QuizQuestionReviewRow
+public sealed record QuizQuestionReviewRow
 {
     public QuizQuestionReviewRow(QuizQuestionReviewDto question)
     {

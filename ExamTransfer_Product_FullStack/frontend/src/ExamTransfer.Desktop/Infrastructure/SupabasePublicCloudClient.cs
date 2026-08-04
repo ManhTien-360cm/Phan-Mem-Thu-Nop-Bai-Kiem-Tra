@@ -173,11 +173,23 @@ public sealed class PublicCloudApiException(
 
 public sealed record SupabaseAuthenticatedAccount(
     CurrentAccountDto Account,
-    string AccessToken);
+    string AccessToken,
+    string? RefreshToken);
+
+public sealed class SupabaseAuthSessionChangedEventArgs(
+    string accessToken,
+    string? refreshToken,
+    DateTimeOffset expiresAtUtc) : EventArgs
+{
+    public string AccessToken { get; } = accessToken;
+    public string? RefreshToken { get; } = refreshToken;
+    public DateTimeOffset ExpiresAtUtc { get; } = expiresAtUtc;
+}
 
 public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions NotificationJson = CreateNotificationJson();
     private readonly HttpClient http;
     private readonly IServerClock serverClock;
     private readonly IPublicCloudRuntimeOptionsProvider optionsProvider;
@@ -219,6 +231,7 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
     public string? AccessToken => accessToken;
     public DateTimeOffset ExpiresAtUtc => expiresAtUtc;
     public string? ConfigurationErrorCode => RuntimeOptions.ErrorCode;
+    public event EventHandler<SupabaseAuthSessionChangedEventArgs>? SessionChanged;
 
     public async Task LoginAsync(string account, string password, CancellationToken cancellationToken)
     {
@@ -500,6 +513,40 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
         return timeline;
     }
 
+    public async Task<IReadOnlyList<StudentNotificationEventDto>> GetStudentNotificationEventsAsync(
+        Guid sessionId,
+        long afterRevision,
+        Guid? afterEventId,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        if (sessionId == Guid.Empty || afterRevision < 0 || limit is < 1 or > 100)
+            throw new ArgumentOutOfRangeException(nameof(limit), "PublicCloud notification cursor is invalid.");
+        var rows = await RpcAsync<JsonElement>(
+            "get_public_student_notification_events",
+            new
+            {
+                p_session_id = sessionId,
+                p_after_revision = afterRevision,
+                p_after_event_id = afterEventId,
+                p_limit = limit
+            },
+            cancellationToken);
+        if (rows.ValueKind != JsonValueKind.Array)
+            throw new InvalidDataException("PublicCloud notification catch-up is not an array.");
+        var result = new List<StudentNotificationEventDto>(rows.GetArrayLength());
+        foreach (var row in rows.EnumerateArray())
+        {
+            var notification = row.Deserialize<StudentNotificationEventDto>(NotificationJson)
+                ?? throw new InvalidDataException("PublicCloud notification payload is empty.");
+            if (notification.SessionId != sessionId
+                || StudentNotificationEventValidator.Validate(notification).Count != 0)
+                throw new InvalidDataException("PublicCloud notification payload is invalid.");
+            result.Add(notification);
+        }
+        return result;
+    }
+
     public async Task<QuizAttemptDto> GetQuizAttemptAsync(Guid attemptId, CancellationToken cancellationToken)
     {
         var snapshot = await RpcAsync<PublicQuizAttemptSnapshot>(
@@ -564,6 +611,29 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
             snapshot.CorrectAnswersVisible,
             snapshot.CorrectAnswersVisible ? snapshot.GeneralComment : null,
             questions);
+    }
+
+    public async Task<StudentResultPageDto> GetStudentResultsAsync(
+        int pageSize,
+        StudentResultCursorDto? cursor,
+        CancellationToken cancellationToken)
+    {
+        if (pageSize is < 1 or > StudentResultPageValidator.MaxPageSize)
+            throw new ArgumentOutOfRangeException(nameof(pageSize));
+        var payload = await RpcAsync<JsonElement>(
+            "get_student_results",
+            new
+            {
+                p_page_size = pageSize,
+                p_cursor_returned_at = cursor?.ReturnedAtUtc,
+                p_cursor_result_type = cursor?.ResultType.ToString(),
+                p_cursor_result_id = cursor?.ResultId
+            },
+            cancellationToken);
+        var page = payload.Deserialize<StudentResultPageDto>(NotificationJson)
+            ?? throw new InvalidDataException("PublicCloud student result page is empty.");
+        StudentResultPageValidator.EnsureValid(page);
+        return page;
     }
 
     private static QuizAttemptDto ToQuizAttempt(PublicQuizAttemptSnapshot row) =>
@@ -644,11 +714,31 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
             "get_examtransfer_cloud_capabilities",
             new { },
             cancellationToken);
-        if (capabilities.SchemaVersion < 23)
+        if (capabilities.SchemaVersion < 27
+            || capabilities.CriticalRpcs is null
+            || !capabilities.CriticalRpcs.Contains(
+                "get_public_student_notification_events",
+                StringComparer.Ordinal)
+            || !capabilities.CriticalRpcs.Contains(
+                "send_public_teacher_message",
+                StringComparer.Ordinal)
+            || !capabilities.CriticalRpcs.Contains(
+                "get_student_results",
+                StringComparer.Ordinal)
+            || !capabilities.CriticalRpcs.Contains(
+                "set_public_submission_late_override",
+                StringComparer.Ordinal))
             throw new PublicCloudApiException(
                 "PUBLICCLOUD_SCHEMA_INCOMPATIBLE",
                 "PublicCloud schema is incompatible with this ExamTransfer build.",
                 HttpStatusCode.Conflict);
+    }
+
+    private static JsonSerializerOptions CreateNotificationJson()
+    {
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        options.Converters.Add(new JsonStringEnumConverter());
+        return options;
     }
 
     public async Task<string> GetValidAccessTokenAsync(
@@ -721,7 +811,8 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
                     ?? throw new PublicCloudApiException(
                         "PUBLICCLOUD_AUTH_INVALID",
                         "Supabase authentication returned no access token.",
-                        HttpStatusCode.Unauthorized));
+                        HttpStatusCode.Unauthorized),
+                refreshToken);
         }
         catch
         {
@@ -783,27 +874,75 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
                 ?? throw new PublicCloudApiException(
                     "PUBLICCLOUD_AUTH_INVALID",
                     "Supabase password change returned no access token.",
-                    HttpStatusCode.Unauthorized));
+                    HttpStatusCode.Unauthorized),
+            refreshToken);
     }
 
     public bool TryRestoreAccessToken(
         string token,
         string expectedProviderUserId,
+        DateTimeOffset expiresAt) =>
+        TryRestoreSession(token, null, expectedProviderUserId, expiresAt);
+
+    public bool TryRestoreSession(
+        string token,
+        string? storedRefreshToken,
+        string expectedProviderUserId,
         DateTimeOffset expiresAt)
     {
         if (string.IsNullOrWhiteSpace(token)
             || string.IsNullOrWhiteSpace(expectedProviderUserId)
-            || expiresAt <= DateTimeOffset.UtcNow
             || !TryReadJwtIdentity(token, out var subject, out var jwtExpiresAt)
             || !string.Equals(subject, expectedProviderUserId, StringComparison.OrdinalIgnoreCase)
-            || jwtExpiresAt <= DateTimeOffset.UtcNow)
+            || ((expiresAt <= DateTimeOffset.UtcNow
+                    || jwtExpiresAt <= DateTimeOffset.UtcNow)
+                && string.IsNullOrWhiteSpace(storedRefreshToken)))
             return false;
 
         Logout();
         accessToken = token;
+        refreshToken = string.IsNullOrWhiteSpace(storedRefreshToken)
+            ? null
+            : storedRefreshToken;
         providerUserId = subject;
         expiresAtUtc = expiresAt < jwtExpiresAt ? expiresAt : jwtExpiresAt;
         return true;
+    }
+
+    public async Task<SupabaseAuthenticatedAccount> RestoreAuthenticatedAccountAsync(
+        string deviceId,
+        CancellationToken cancellationToken)
+    {
+        await EnsureFreshSessionAsync(cancellationToken);
+        var current = await ReadAuthoritativeAccountAsync(deviceId, cancellationToken);
+        return new(
+            current,
+            accessToken
+                ?? throw new PublicCloudApiException(
+                    "PUBLICCLOUD_AUTH_INVALID",
+                    "Supabase session restoration returned no access token.",
+                    HttpStatusCode.Unauthorized),
+            refreshToken);
+    }
+
+    public async Task LogoutAsync(CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(accessToken) || !Configured)
+        {
+            Logout();
+            return;
+        }
+
+        try
+        {
+            using var request = ProjectRequest(HttpMethod.Post, "/auth/v1/logout");
+            using var response = await SendAsync(request, cancellationToken);
+            await EnsureSuccessAsync(response, "Supabase logout", cancellationToken);
+        }
+        finally
+        {
+            Logout();
+        }
     }
 
     public void Logout()
@@ -846,6 +985,12 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
             root.TryGetProperty("expires_in", out var expiry)
                 ? expiry.GetInt32()
                 : 3600);
+        SessionChanged?.Invoke(
+            this,
+            new SupabaseAuthSessionChangedEventArgs(
+                accessToken,
+                refreshToken,
+                expiresAtUtc));
     }
 
     private async Task<CurrentAccountDto> ReadAuthoritativeAccountAsync(
@@ -921,6 +1066,8 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
         }
         else
         {
+            if (!string.IsNullOrWhiteSpace(studentCode))
+                throw InvalidAuthenticatedRole("Non-student profile contains a student code.");
             if (string.IsNullOrWhiteSpace(authenticatedEmail))
                 throw InvalidAuthenticatedRole("Supabase authenticated email is missing.");
             accountIdentifier = authenticatedEmail.Trim();
@@ -1127,7 +1274,9 @@ public sealed class SupabasePublicCloudClient : ISupabaseAccessTokenProvider
         DateTimeOffset? PlannedStartUtc,
         int? Capacity,
         int CurrentParticipantCount);
-    private sealed record CloudCapabilities(int SchemaVersion);
+    private sealed record CloudCapabilities(
+        int SchemaVersion,
+        IReadOnlyList<string>? CriticalRpcs = null);
     private sealed record ParticipantStatusRow(string Status);
     private sealed record EnrollmentRow(Guid Id, string Status);
     private sealed record SubmissionFilePlanRow(Guid Id,

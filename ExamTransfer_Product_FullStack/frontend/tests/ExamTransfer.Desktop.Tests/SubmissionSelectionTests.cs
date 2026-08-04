@@ -160,6 +160,31 @@ public sealed class SubmissionSelectionTests
     }
 
     [Fact]
+    public async Task ResubmitIsDisabledUntilLatestAttemptIsRejected()
+    {
+        var session = MakeSession();
+        var submitted = MakeSubmission(
+            "HS001", false, DateTimeOffset.UtcNow, TransferStatus.Completed);
+        var rejected = submitted with { Status = SubmissionStatus.Rejected };
+        var api = new SubmissionBackendClient(session) { Submissions = [submitted] };
+        using var viewModel = new SubmissionCenterViewModel(api, new SilentRealtimeService());
+        await viewModel.InitializeAsync(CancellationToken.None);
+
+        Assert.False(viewModel.ResubmitCommand.CanExecute(null));
+        Assert.True(viewModel.RejectCommand.CanExecute(null));
+        Assert.Contains("từ chối attempt", viewModel.ResubmitGuidance, StringComparison.OrdinalIgnoreCase);
+
+        api.Submissions = [rejected];
+        viewModel.LoadCommand.Execute(null);
+        Assert.True(SpinWait.SpinUntil(
+            () => api.SubmissionRequests == 2 && !viewModel.IsBusy,
+            TimeSpan.FromSeconds(3)));
+
+        Assert.True(viewModel.ResubmitCommand.CanExecute(null));
+        Assert.False(viewModel.RejectCommand.CanExecute(null));
+    }
+
+    [Fact]
     public void ProductionXaml_SeparatesInteractiveSelectionFromReadOnlyLateFlag()
     {
         var xaml = File.ReadAllText(FindFile(
@@ -167,8 +192,12 @@ public sealed class SubmissionSelectionTests
 
         Assert.Contains("Header=\"CHỌN\"", xaml, StringComparison.Ordinal);
         Assert.Contains("IsSelected, Mode=TwoWay", xaml, StringComparison.Ordinal);
-        Assert.Contains("Header=\"MUỘN\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("IsLate, Mode=OneWay", xaml, StringComparison.Ordinal);
+        Assert.Contains("Header=\"THỜI HẠN\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Binding=\"{Binding LateDisplay}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Header=\"NGUỒN\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("UseComputedLateCommand", xaml, StringComparison.Ordinal);
+        Assert.Contains("MarkLateCommand", xaml, StringComparison.Ordinal);
+        Assert.Contains("MarkOnTimeCommand", xaml, StringComparison.Ordinal);
         Assert.Contains("SelectAllCommand", xaml, StringComparison.Ordinal);
         Assert.Contains("ClearSelectionCommand", xaml, StringComparison.Ordinal);
         Assert.Contains("Đã chọn", xaml, StringComparison.Ordinal);

@@ -305,17 +305,34 @@ public sealed class BackendClient : IBackendClient
         var total = response.Content.Headers.ContentLength;
         await using var source = await response.Content.ReadAsStreamAsync(ct);
         Directory.CreateDirectory(Path.GetDirectoryName(destinationPath) ?? AppContext.BaseDirectory);
-        await using var target = new FileStream(destinationPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, true);
-        var buffer = new byte[81920];
-        long readTotal = 0;
-        while (true)
+        var partialPath = destinationPath + ".partial";
+        long readTotal;
+        await using (var target = new FileStream(
+            partialPath,
+            FileMode.Create,
+            FileAccess.Write,
+            FileShare.None,
+            81920,
+            true))
         {
-            var read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), ct);
-            if (read == 0) break;
-            await target.WriteAsync(buffer.AsMemory(0, read), ct);
-            readTotal += read;
-            if (total is > 0) progress?.Report(readTotal * 100d / total.Value);
+            var buffer = new byte[81920];
+            readTotal = 0;
+            while (true)
+            {
+                var read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), ct);
+                if (read == 0) break;
+                await target.WriteAsync(buffer.AsMemory(0, read), ct);
+                readTotal += read;
+                if (total is > 0) progress?.Report(readTotal * 100d / total.Value);
+            }
+            await target.FlushAsync(ct);
         }
+
+        if (total.HasValue && readTotal != total.Value)
+            throw new EndOfStreamException(
+                $"Download ended after {readTotal} bytes; the server announced {total.Value} bytes.");
+
+        File.Move(partialPath, destinationPath, true);
         progress?.Report(100);
     }
 

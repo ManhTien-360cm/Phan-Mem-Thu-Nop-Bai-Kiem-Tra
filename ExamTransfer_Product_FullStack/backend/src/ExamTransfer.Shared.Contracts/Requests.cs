@@ -43,6 +43,7 @@ public sealed record CreateSessionRequest(
     SessionAccessMode AccessMode = SessionAccessMode.LanOnly,
     SessionAdmissionMode AdmissionMode = SessionAdmissionMode.ClassMembersOnly);
 public sealed record UpdateSessionRequest(DateTimeOffset? PlannedStartUtc, string SettingsJson, bool AutoApprove, int? Capacity, string RowVersion, bool ApprovePendingParticipants = false);
+public sealed record ChangePublicCloudRoomCodeRequest(string? NewRoomCode, string RowVersion);
 public sealed record JoinSessionRequest(string RoomCode, string StudentCode, string DisplayName, string? ClassName, string DeviceId, string MachineName, string AppVersion, string Nonce);
 public sealed record JoinSessionResponse(Guid SessionId, Guid ParticipantId, ParticipantStatus Status, string AccessToken, DateTimeOffset TokenExpiresAtUtc, ParticipantDto Participant);
 public sealed record TeacherMutationRequest(Guid MutationRequestId);
@@ -61,15 +62,28 @@ public sealed record FinalizeSubmissionRequest(string? ClientNote);
 public sealed record FinalizeSubmissionResponse(SubmissionStatus Status, DateTimeOffset ServerReceivedAtUtc, bool IsLate, string ReceiptCode, string ReceiptSignature, IReadOnlyList<FileDescriptorDto> Files);
 public sealed record RejectSubmissionRequest(string Reason, Guid MutationRequestId);
 public sealed record AllowResubmitRequest(string Reason, Guid MutationRequestId);
+public sealed record SetSubmissionLateOverrideRequest(bool? LateOverride, string Reason, Guid MutationRequestId);
 
 public sealed record CreateExportRequest(Guid SessionId, bool IncludeFiles, bool IncludeManifest, bool IncludeReceipts, bool IncludeAudit, string Format, string NamingPattern);
 public sealed record CreateBackupRequest(bool IncludeFiles, bool Encrypt, string? PasswordHint);
 public sealed record RestoreBackupRequest(string ConfirmationText);
 public sealed record RestoreScheduledDto(Guid BackupId, bool RequiresRestart, string Message);
 
-public sealed record SaveGradeRequest(decimal? Score, decimal MaxScore, IReadOnlyList<RubricScoreDto> RubricScores, string? GeneralComment, string RowVersion);
-public sealed record ReturnGradeRequest(string? Message);
-public sealed record ReopenGradeRequest(string Reason);
+public sealed record SaveGradeRequest(
+    decimal? Score,
+    decimal MaxScore,
+    IReadOnlyList<RubricScoreDto> RubricScores,
+    string? GeneralComment,
+    string RowVersion,
+    Guid MutationRequestId = default);
+public sealed record ReturnGradeRequest(
+    string? Message,
+    string RowVersion = "",
+    Guid MutationRequestId = default);
+public sealed record ReopenGradeRequest(
+    string Reason,
+    string RowVersion = "",
+    Guid MutationRequestId = default);
 
 public sealed record SaveControlPolicyRequest(bool Fullscreen, string FocusRule, string ClipboardRule, IReadOnlyList<string> AllowedProcesses, IReadOnlyList<string> BlockedProcesses, string NetworkRule, bool EmergencyExit, int TtlMinutes, string? RowVersion);
 public sealed record ApplyControlPolicyRequest(IReadOnlyList<Guid>? ParticipantIds);

@@ -152,6 +152,171 @@ public sealed class SessionFirstOpenFrontendTests
     }
 
     [Fact]
+    public async Task PublicCloudRoomConflict_RequiresNewCodeAndStaysUnshareableUntilReady()
+    {
+        var exam = new ExamSummaryDto(
+            Guid.NewGuid(),
+            null,
+            "Kiểm tra",
+            "Toán",
+            45,
+            ExamDeliveryType.FileSubmission,
+            ExamStatus.Published,
+            1,
+            1,
+            "exam-rv");
+        var sessionId = Guid.NewGuid();
+        var conflicted = new SessionSummaryDto(
+            sessionId,
+            exam.Id,
+            exam.Title,
+            "PUB133",
+            SessionStatus.Waiting,
+            DateTimeOffset.UtcNow,
+            null,
+            null,
+            null,
+            new(0, 0, 0, 0, 0, 0, 0),
+            1,
+            "session-rv-1",
+            SessionAccessMode.PublicCloud,
+            AdmissionMode: SessionAdmissionMode.OpenRequest);
+        var api = new RecordingBackendClient(DateTimeOffset.UtcNow)
+        {
+            ExamResponses = [exam],
+            SessionResponses = [],
+            SessionDetailResponse = new(conflicted, [], "{}", Capacity: 36)
+        };
+        api.ProjectionResponses.Enqueue(new(
+            sessionId,
+            true,
+            false,
+            SyncStatus.Conflict,
+            ErrorCodes.RoomCodeConflict,
+            "Mã phòng PublicCloud đang được sử dụng.",
+            1));
+        using var viewModel = new SessionManagementViewModel(
+            api,
+            projectionDelay: (_, _) => Task.CompletedTask,
+            projectionPollAttempts: 3);
+        await viewModel.InitializeAsync(CancellationToken.None);
+        viewModel.AccessMode = SessionAccessMode.PublicCloud;
+
+        viewModel.CreateCommand.Execute(null);
+        Assert.True(SpinWait.SpinUntil(
+            () => viewModel.CanRecoverRoomCode,
+            TimeSpan.FromSeconds(2)));
+        Assert.False(viewModel.CanShareRoomCode);
+        Assert.False(viewModel.CanRetryProjection);
+        Assert.True(viewModel.RecoverRoomCodeCommand.CanExecute(null));
+
+        var recovered = conflicted with { RoomCode = "NEW133", RowVersion = "session-rv-2" };
+        api.SessionDetailResponse = new(recovered, [], "{}", Capacity: 36);
+        api.ProjectionResponses.Enqueue(new(
+            sessionId,
+            true,
+            false,
+            SyncStatus.Pending,
+            "PUBLICCLOUD_PROJECTION_PENDING",
+            "Đang đồng bộ.",
+            0));
+        api.ProjectionResponses.Enqueue(new(
+            sessionId,
+            true,
+            true,
+            SyncStatus.Synced,
+            "PUBLICCLOUD_READY",
+            "Sẵn sàng.",
+            0));
+        viewModel.RecoverRoomCodeCommand.Execute(null);
+
+        Assert.True(SpinWait.SpinUntil(
+            () => api.PutPaths.Contains($"api/v1/sessions/{sessionId}/room-code")
+                && viewModel.CanShareRoomCode,
+            TimeSpan.FromSeconds(2)));
+        var request = Assert.IsType<ChangePublicCloudRoomCodeRequest>(Assert.Single(api.PutRequests));
+        Assert.Null(request.NewRoomCode);
+        Assert.Equal("session-rv-1", request.RowVersion);
+        Assert.Equal("NEW133", viewModel.RoomCode);
+        Assert.False(viewModel.CanRecoverRoomCode);
+    }
+
+    [Fact]
+    public async Task ExistingPublicCloudConflict_RestoresShareLockAndUsesSelectedRowVersion()
+    {
+        var exam = new ExamSummaryDto(
+            Guid.NewGuid(),
+            null,
+            "Kiểm tra đã lưu",
+            "Tin",
+            30,
+            ExamDeliveryType.FileSubmission,
+            ExamStatus.Published,
+            1,
+            1,
+            "exam-rv");
+        var sessionId = Guid.NewGuid();
+        var existing = new SessionSummaryDto(
+            sessionId,
+            exam.Id,
+            exam.Title,
+            "EXIST133",
+            SessionStatus.Waiting,
+            DateTimeOffset.UtcNow,
+            null,
+            null,
+            null,
+            new(0, 0, 0, 0, 0, 0, 0),
+            1,
+            "persisted-row-version",
+            SessionAccessMode.PublicCloud,
+            AdmissionMode: SessionAdmissionMode.OpenRequest);
+        var api = new RecordingBackendClient(DateTimeOffset.UtcNow)
+        {
+            ExamResponses = [exam],
+            SessionResponses = [existing]
+        };
+        api.ProjectionResponses.Enqueue(new(
+            sessionId,
+            true,
+            false,
+            SyncStatus.Conflict,
+            ErrorCodes.RoomCodeConflict,
+            "Mã phòng PublicCloud đang được sử dụng.",
+            1));
+        using var viewModel = new SessionManagementViewModel(
+            api,
+            projectionDelay: (_, _) => Task.CompletedTask,
+            projectionPollAttempts: 2);
+
+        await viewModel.InitializeAsync(CancellationToken.None);
+
+        Assert.False(viewModel.CanShareRoomCode);
+        Assert.True(viewModel.CanRecoverRoomCode);
+        Assert.False(viewModel.CanRetryProjection);
+        var recovered = existing with { RoomCode = "RESTORED133", RowVersion = "next-row-version" };
+        api.SessionDetailResponse = new(recovered, [], "{}", Capacity: 36);
+        api.ProjectionResponses.Enqueue(new(
+            sessionId,
+            true,
+            true,
+            SyncStatus.Synced,
+            "PUBLICCLOUD_READY",
+            "Sẵn sàng.",
+            0));
+
+        viewModel.RecoverRoomCodeCommand.Execute(null);
+
+        Assert.True(SpinWait.SpinUntil(
+            () => api.PutPaths.Contains($"api/v1/sessions/{sessionId}/room-code")
+                && viewModel.CanShareRoomCode,
+            TimeSpan.FromSeconds(2)));
+        var request = Assert.IsType<ChangePublicCloudRoomCodeRequest>(Assert.Single(api.PutRequests));
+        Assert.Null(request.NewRoomCode);
+        Assert.Equal("persisted-row-version", request.RowVersion);
+    }
+
+    [Fact]
     public async Task ExamQuickCreate_DefaultsToNoClassAssignment()
     {
         var rule = new FileRuleDto([".pdf"], 1024, 2048, 1, false, true);

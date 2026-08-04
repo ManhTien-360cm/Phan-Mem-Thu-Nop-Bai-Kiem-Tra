@@ -1,45 +1,107 @@
 using System.Net;
-using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using ExamTransfer.Application;
+using ExamTransfer.Shared.Contracts;
 using Microsoft.Extensions.Options;
 
 namespace ExamTransfer.Infrastructure.Security;
 
 public sealed class LanAccessPolicy : ILanAccessPolicy
 {
-    private readonly IReadOnlyList<NetworkRange> ranges;
+    private readonly IReadOnlyList<NetworkRange> configuredRanges;
     private readonly IReadOnlyList<NetworkRange> trustedDockerGateways;
     private readonly bool trustDockerDesktopNat;
+    private readonly bool runningInContainer;
+    private readonly Func<IReadOnlyList<NetworkRange>> localRangeProvider;
 
     public LanAccessPolicy(IOptions<ExamTransferOptions> options)
         : this(
-            GetAllowedRanges(options.Value),
+            ParseConfigured(
+                    options.Value.LanAccess.AllowedCidrs
+                        .Concat(options.Value.Discovery.AdditionalAllowedCidrs))
+                .ToList(),
             ParseConfigured(options.Value.LanAccess.TrustedDockerGatewayCidrs).ToList(),
-            options.Value.LanAccess.TrustDockerDesktopNat)
+            options.Value.LanAccess.TrustDockerDesktopNat,
+            LanNetworkConfiguration.RunningInContainer,
+            GetLocalRanges)
     {
     }
 
     internal LanAccessPolicy(
-        IReadOnlyList<NetworkRange> ranges,
+        IReadOnlyList<NetworkRange> configuredRanges,
         IReadOnlyList<NetworkRange>? trustedDockerGateways = null,
-        bool trustDockerDesktopNat = false)
+        bool trustDockerDesktopNat = false,
+        bool runningInContainer = false,
+        Func<IReadOnlyList<NetworkRange>>? localRangeProvider = null)
     {
-        this.ranges = ranges;
+        this.configuredRanges = configuredRanges;
         this.trustedDockerGateways = trustedDockerGateways ?? [];
         this.trustDockerDesktopNat = trustDockerDesktopNat;
+        this.runningInContainer = runningInContainer;
+        this.localRangeProvider = localRangeProvider ?? (() => []);
     }
 
-    public bool IsAllowed(string? remoteAddress)
+    public bool IsAllowed(string? remoteAddress) => Evaluate(remoteAddress).Allowed;
+
+    public LanAccessDecision Evaluate(string? remoteAddress)
     {
-        if (!IPAddress.TryParse(remoteAddress, out var address)) return false;
+        var runtimeMode = runningInContainer ? "Docker" : "Native";
+        var ranges = runningInContainer
+            ? configuredRanges
+            : configuredRanges.Concat(localRangeProvider()).Distinct().ToList();
+        var allowedCidrs = ranges
+            .Select(range => range.Cidr)
+            .Concat(trustDockerDesktopNat
+                ? trustedDockerGateways.Select(range => $"docker-gateway:{range.Cidr}")
+                : [])
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        if (!IPAddress.TryParse(remoteAddress, out var address))
+            return Denied("REMOTE_IP_INVALID");
         if (address.IsIPv4MappedToIPv6) address = address.MapToIPv4();
-        if (IPAddress.IsLoopback(address)) return true;
-        if (address.AddressFamily != AddressFamily.InterNetwork || !IsPrivate(address)) return false;
-        if (ranges.Any(range => range.Contains(address))) return true;
-        return trustDockerDesktopNat
-            && LanNetworkConfiguration.RunningInContainer
-            && trustedDockerGateways.Any(range => range.Contains(address));
+        var effectiveClientIp = address.ToString();
+        if (IPAddress.IsLoopback(address))
+            return Allowed("loopback");
+        if (address.AddressFamily != AddressFamily.InterNetwork)
+            return Denied("REMOTE_IP_NOT_IPV4");
+        if (!IsPrivate(address))
+            return Denied("REMOTE_IP_NOT_PRIVATE");
+
+        var configuredGateway = runningInContainer
+            ? trustedDockerGateways.FirstOrDefault(range => range.Contains(address))
+            : default;
+        if (configuredGateway != default)
+            return trustDockerDesktopNat
+                ? Allowed($"docker-gateway:{configuredGateway.Cidr}")
+                : Denied("DOCKER_GATEWAY_TRUST_DISABLED");
+
+        var matched = ranges.FirstOrDefault(range => range.Contains(address));
+        if (matched != default)
+            return Allowed(matched.Cidr);
+        return Denied("NO_MATCHING_ALLOWED_CIDR");
+
+        LanAccessDecision Allowed(string matchedRange) =>
+            new(
+                true,
+                runtimeMode,
+                remoteAddress,
+                effectiveClientIp,
+                allowedCidrs,
+                matchedRange,
+                "ALLOWED");
+
+        LanAccessDecision Denied(string reason) =>
+            new(
+                false,
+                runtimeMode,
+                remoteAddress,
+                IPAddress.TryParse(remoteAddress, out var parsed)
+                    ? (parsed.IsIPv4MappedToIPv6 ? parsed.MapToIPv4() : parsed).ToString()
+                    : null,
+                allowedCidrs,
+                null,
+                reason);
     }
 
     internal static bool IsPrivate(IPAddress address)
@@ -76,24 +138,16 @@ public sealed class LanAccessPolicy : ILanAccessPolicy
     {
         if (prefix is < 8 or > 32) return false;
         var bytes = address.GetAddressBytes();
-        if (bytes[0] == 10) return prefix >= 8;
-        if (bytes[0] == 172 && bytes[1] is >= 16 and <= 31) return prefix >= 12;
-        return bytes[0] == 192 && bytes[1] == 168 && prefix >= 16;
+        if (bytes[0] == 10) return prefix >= 9;
+        if (bytes[0] == 172 && bytes[1] is >= 16 and <= 31) return prefix >= 13;
+        return bytes[0] == 192 && bytes[1] == 168 && prefix >= 17;
     }
 
-    private static IEnumerable<NetworkRange> GetLocalRanges()
-    {
-        foreach (var nic in NetworkInterface.GetAllNetworkInterfaces()
-                     .Where(x => x.OperationalStatus == OperationalStatus.Up))
-        {
-            foreach (var unicast in nic.GetIPProperties().UnicastAddresses
-                         .Where(x => x.Address.AddressFamily == AddressFamily.InterNetwork && x.IPv4Mask is not null))
-            {
-                if (IsPrivate(unicast.Address))
-                    yield return NetworkRange.FromMask(unicast.Address, unicast.IPv4Mask);
-            }
-        }
-    }
+    private static IReadOnlyList<NetworkRange> GetLocalRanges() =>
+        LanIpv4Network.SelectUsable(LanIpv4Network.GetSystemInterfaces())
+            .Select(item => NetworkRange.FromPrefix(item.Address, item.PrefixLength))
+            .Distinct()
+            .ToList();
 
     private static IEnumerable<NetworkRange> ParseConfigured(IEnumerable<string> values)
     {
@@ -102,31 +156,24 @@ public sealed class LanAccessPolicy : ILanAccessPolicy
                 yield return range;
     }
 
-    private static IReadOnlyList<NetworkRange> GetAllowedRanges(ExamTransferOptions options)
+    internal readonly record struct NetworkRange(uint Network, uint Mask, int Prefix)
     {
-        var configured = options.LanAccess.AllowedCidrs
-            .Concat(options.Discovery.AdditionalAllowedCidrs);
-        var explicitRanges = ParseConfigured(configured).ToList();
-        if (LanNetworkConfiguration.RunningInContainer)
-            return explicitRanges;
-        return GetLocalRanges().Concat(explicitRanges).Distinct().ToList();
-    }
+        public string Cidr => $"{FromUInt32(Network)}/{Prefix}";
 
-    internal readonly record struct NetworkRange(uint Network, uint Mask)
-    {
         public bool Contains(IPAddress address) =>
             (ToUInt32(address) & Mask) == Network;
 
         public static NetworkRange FromMask(IPAddress address, IPAddress mask)
         {
             var maskValue = ToUInt32(mask);
-            return new(ToUInt32(address) & maskValue, maskValue);
+            var prefix = Convert.ToString(maskValue, 2).Count(bit => bit == '1');
+            return new(ToUInt32(address) & maskValue, maskValue, prefix);
         }
 
         public static NetworkRange FromPrefix(IPAddress address, int prefix)
         {
             var mask = prefix == 0 ? 0U : uint.MaxValue << (32 - prefix);
-            return new(ToUInt32(address) & mask, mask);
+            return new(ToUInt32(address) & mask, mask, prefix);
         }
 
         private static uint ToUInt32(IPAddress address)
@@ -134,5 +181,8 @@ public sealed class LanAccessPolicy : ILanAccessPolicy
             var bytes = address.GetAddressBytes();
             return ((uint)bytes[0] << 24) | ((uint)bytes[1] << 16) | ((uint)bytes[2] << 8) | bytes[3];
         }
+
+        private static IPAddress FromUInt32(uint value) =>
+            new([(byte)(value >> 24), (byte)(value >> 16), (byte)(value >> 8), (byte)value]);
     }
 }

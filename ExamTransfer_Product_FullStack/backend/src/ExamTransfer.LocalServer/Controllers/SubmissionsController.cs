@@ -3,12 +3,15 @@ using ExamTransfer.LocalServer.Auth;
 using ExamTransfer.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using System.Security.Claims;
 
 namespace ExamTransfer.LocalServer.Controllers;
 
 [Route("api/v1")]
 [Authorize(AuthenticationSchemes = ExamTransferAuthSchemes.Account + "," + ExamTransferAuthSchemes.ExamParticipant)]
-public sealed class SubmissionsController(ISubmissionService service) : ApiControllerBase
+public sealed class SubmissionsController(
+    ISubmissionService service,
+    ISubmissionDownloadService downloads) : ApiControllerBase
 {
     [HttpPost("submissions/init")][Authorize(Policy = "StudentParticipant")]
     public async Task<ActionResult<ApiResponse<InitSubmissionResponse>>> Init(InitSubmissionRequest request, CancellationToken ct)
@@ -56,15 +59,36 @@ public sealed class SubmissionsController(ISubmissionService service) : ApiContr
     [HttpPost("submissions/{id:guid}/reject")][Authorize(Policy = "TeacherOrAdmin")]
     public async Task<ActionResult<ApiResponse<object>>> Reject(Guid id, RejectSubmissionRequest request, CancellationToken ct) { await service.RejectAsync(id, request, ct); return EmptyData(); }
 
+    [HttpPut("submissions/{id:guid}/late-override")][Authorize(Policy = "TeacherOrAdmin")]
+    public async Task<ActionResult<ApiResponse<SubmissionSummaryDto>>> SetLateOverride(
+        Guid id,
+        SetSubmissionLateOverrideRequest request,
+        CancellationToken ct) => Data(await service.SetLateOverrideAsync(
+            id,
+            request,
+            RequiredGuidClaim(ClaimTypes.NameIdentifier),
+            User.FindFirst("organization_id")?.Value,
+            ct));
+
     [HttpPost("participants/{participantId:guid}/allow-resubmit")][Authorize(Policy = "TeacherOrAdmin")]
     public async Task<ActionResult<ApiResponse<object>>> Resubmit(Guid participantId, AllowResubmitRequest request, CancellationToken ct) { await service.AllowResubmitAsync(participantId, request, ct); return EmptyData(); }
 
     [HttpGet("submissions/{id:guid}/files/{fileId:guid}/content")]
+    [Authorize(Policy = "TeacherOrAdmin")]
     public async Task<IActionResult> FileContent(Guid id, Guid fileId, CancellationToken ct)
     {
-        await EnsureSubmissionScopeAsync(id, ct);
-        var f = await service.GetFileAsync(id, fileId, ct);
-        return PhysicalFile(f.Path, f.MimeType, f.DownloadName, true);
+        var download = await downloads.OpenAsync(
+            id,
+            fileId,
+            RequiredGuidClaim(ClaimTypes.NameIdentifier),
+            User.FindFirst("organization_id")?.Value,
+            HttpContext.TraceIdentifier,
+            ct);
+        return File(
+            download.Content,
+            download.MimeType,
+            download.DownloadName,
+            enableRangeProcessing: true);
     }
 
     private async Task<SubmissionSummaryDto> EnsureSubmissionScopeAsync(Guid submissionId, CancellationToken ct)

@@ -23,7 +23,7 @@ try {
         'approve_public_enrollment_request','reject_public_enrollment_request',
         'get_public_student_timeline'
     )
-    if ([int]$result.schemaVersion -ne 23) { throw "Expected schema 23; received $($result.schemaVersion)." }
+    if ([int]$result.schemaVersion -ne 25) { throw "Expected schema 25; received $($result.schemaVersion)." }
     foreach ($rpc in $required) { if ($result.criticalRpcs -notcontains $rpc) { throw "Missing RPC $rpc." } }
     foreach ($bucket in @('exam-archives','public-submission-archives')) { if ($result.buckets -notcontains $bucket) { throw "Missing bucket $bucket." } }
     Write-AcceptanceResult -Passed $true -Code 'CLOUD_SCHEMA_VERSION_OK' -TraceId $traceId -Detail 'live capability RPC reports schema 23, critical RPCs and buckets'

@@ -28,8 +28,12 @@ public sealed class LanAndSubmissionPolicyTests
 
     [Theory]
     [InlineData("192.168.50.0/24", true)]
-    [InlineData("10.0.0.0/8", true)]
+    [InlineData("10.0.0.0/8", false)]
+    [InlineData("10.0.0.0/9", true)]
+    [InlineData("172.16.0.0/12", false)]
     [InlineData("172.20.0.0/16", true)]
+    [InlineData("192.168.0.0/16", false)]
+    [InlineData("192.168.0.0/17", true)]
     [InlineData("0.0.0.0/0", false)]
     [InlineData("8.8.8.0/24", false)]
     [InlineData("192.168.0.0/8", false)]
@@ -43,13 +47,73 @@ public sealed class LanAndSubmissionPolicyTests
         var options = new ExamTransferOptions();
         options.LanAccess.AllowedCidrs.Add("0.0.0.0/0");
         options.LanAccess.TrustDockerDesktopNat = true;
-        options.LanAccess.TrustedDockerGatewayCidrs.Add("172.16.0.0/12");
+        options.LanAccess.TrustedDockerGatewayCidrs.Add("192.168.65.0/24");
 
         var result = new ExamTransferOptionsValidator().Validate(null, options);
 
         Assert.True(result.Failed);
         Assert.Contains(result.Failures!, x => x.Contains("AllowedCidrs", StringComparison.Ordinal));
-        Assert.Contains(result.Failures!, x => x.Contains("/24 or narrower", StringComparison.Ordinal));
+        Assert.Contains(result.Failures!, x => x.Contains("/32", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void LanAccessPolicy_NativeModeRefreshesPhysicalSubnetForEveryDecision()
+    {
+        IReadOnlyList<LanAccessPolicy.NetworkRange> currentRanges =
+        [
+            LanAccessPolicy.NetworkRange.FromPrefix(IPAddress.Parse("192.168.50.20"), 24)
+        ];
+        var policy = new LanAccessPolicy(
+            [],
+            runningInContainer: false,
+            localRangeProvider: () => currentRanges);
+
+        var beforeNetworkChange = policy.Evaluate("192.168.50.42");
+        currentRanges =
+        [
+            LanAccessPolicy.NetworkRange.FromPrefix(IPAddress.Parse("10.107.79.254"), 24)
+        ];
+        var staleSubnet = policy.Evaluate("192.168.50.42");
+        var sameWifiSubnet = policy.Evaluate("10.107.79.25");
+
+        Assert.True(beforeNetworkChange.Allowed);
+        Assert.Equal("192.168.50.0/24", beforeNetworkChange.MatchedRange);
+        Assert.False(staleSubnet.Allowed);
+        Assert.Equal("NO_MATCHING_ALLOWED_CIDR", staleSubnet.DeniedReason);
+        Assert.True(sameWifiSubnet.Allowed);
+        Assert.Equal("Native", sameWifiSubnet.RuntimeMode);
+        Assert.Equal("10.107.79.0/24", sameWifiSubnet.MatchedRange);
+    }
+
+    [Fact]
+    public void LanAccessPolicy_DockerGatewayRequiresExplicitNarrowTrust()
+    {
+        var gateway = LanAccessPolicy.NetworkRange.FromPrefix(
+            IPAddress.Parse("192.168.65.1"),
+            32);
+        var notConfigured = new LanAccessPolicy(
+            [],
+            runningInContainer: true);
+        var configuredButDisabled = new LanAccessPolicy(
+            [gateway],
+            [gateway],
+            trustDockerDesktopNat: false,
+            runningInContainer: true);
+        var trusted = new LanAccessPolicy(
+            [],
+            [gateway],
+            trustDockerDesktopNat: true,
+            runningInContainer: true);
+
+        Assert.False(notConfigured.Evaluate("192.168.65.1").Allowed);
+        var disabled = configuredButDisabled.Evaluate("192.168.65.1");
+        Assert.False(disabled.Allowed);
+        Assert.Equal("DOCKER_GATEWAY_TRUST_DISABLED", disabled.DeniedReason);
+        var allowed = trusted.Evaluate("192.168.65.1");
+        Assert.True(allowed.Allowed);
+        Assert.Equal("Docker", allowed.RuntimeMode);
+        Assert.Equal("docker-gateway:192.168.65.1/32", allowed.MatchedRange);
+        Assert.False(trusted.Evaluate("192.168.65.2").Allowed);
     }
 
     [Theory]

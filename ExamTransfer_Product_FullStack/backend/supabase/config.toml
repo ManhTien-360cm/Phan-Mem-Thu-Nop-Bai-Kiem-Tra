@@ -13,10 +13,11 @@ major_version = 17
 
 [auth]
 enabled = true
+enable_signup = false
 site_url = "http://localhost:5048"
 additional_redirect_urls = ["http://localhost:5048"]
 
 [auth.email]
-enable_signup = false
+enable_signup = true
 double_confirm_changes = true
 enable_confirmations = true

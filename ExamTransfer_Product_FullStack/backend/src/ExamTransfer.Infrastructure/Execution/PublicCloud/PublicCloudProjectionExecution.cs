@@ -1,4 +1,6 @@
+using System.Text.Json;
 using ExamTransfer.Application;
+using ExamTransfer.Domain;
 using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Shared.Contracts;
 using Microsoft.EntityFrameworkCore;
@@ -9,6 +11,9 @@ public sealed class PublicCloudProjectionExecution(
     AppDbContext db,
     ICloudSyncSignal? cloudSyncSignal = null)
 {
+    private static readonly JsonSerializerOptions JsonOptions =
+        new(JsonSerializerDefaults.Web);
+
     public async Task<CloudProjectionReadiness> GetProjectionReadinessAsync(
         Guid id,
         CancellationToken cancellationToken)
@@ -46,6 +51,17 @@ public sealed class PublicCloudProjectionExecution(
                 "Phòng đang chờ đồng bộ PublicCloud.",
                 0);
 
+        if (IsRoomCodeConflict(item))
+            return new(
+                id,
+                true,
+                false,
+                SyncStatus.Conflict,
+                ErrorCodes.RoomCodeConflict,
+                "Mã phòng PublicCloud đang được sử dụng trong tổ chức. Hãy nhập mã khác hoặc để trống để sinh mã mới.",
+                item.RetryCount);
+
+        var failure = ParseFailure(item.LastError);
         return item.Status switch
         {
             SyncStatus.Synced => new(
@@ -61,8 +77,10 @@ public sealed class PublicCloudProjectionExecution(
                 true,
                 false,
                 item.Status,
-                "PUBLICCLOUD_PROJECTION_FAILED",
-                "Đồng bộ PublicCloud thất bại — dữ liệu cục bộ vẫn được giữ. Hãy thử lại.",
+                failure?.Code ?? "PUBLICCLOUD_PROJECTION_FAILED",
+                failure is null
+                    ? "Đồng bộ PublicCloud thất bại — dữ liệu cục bộ vẫn được giữ. Hãy thử lại."
+                    : $"Đồng bộ PublicCloud thất bại ({failure.Code}) — dữ liệu cục bộ vẫn được giữ.",
                 item.RetryCount),
             _ => new(
                 id,
@@ -98,6 +116,8 @@ public sealed class PublicCloudProjectionExecution(
                 ErrorCodes.Conflict,
                 "Không tìm thấy outbox PublicCloud của phòng thi; dữ liệu cục bộ không bị thay đổi.",
                 409);
+        if (IsRoomCodeConflict(item))
+            return await GetProjectionReadinessAsync(id, cancellationToken);
         if (item.Status != SyncStatus.Synced)
         {
             item.Status = SyncStatus.Pending;
@@ -109,5 +129,25 @@ public sealed class PublicCloudProjectionExecution(
             cloudSyncSignal?.Pulse();
         }
         return await GetProjectionReadinessAsync(id, cancellationToken);
+    }
+
+    internal static bool IsRoomCodeConflict(SyncQueueItem item) =>
+        item.Status == SyncStatus.Conflict
+        && string.Equals(
+            ParseFailure(item.LastError)?.Code,
+            ErrorCodes.RoomCodeConflict,
+            StringComparison.Ordinal);
+
+    private static CloudSyncFailure? ParseFailure(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        try
+        {
+            return JsonSerializer.Deserialize<CloudSyncFailure>(value, JsonOptions);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 }

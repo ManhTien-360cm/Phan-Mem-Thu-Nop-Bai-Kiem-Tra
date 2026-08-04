@@ -37,6 +37,7 @@ public sealed class SubmissionDownloadTests
             [first, second, third], destination.Path, CancellationToken.None);
 
         Assert.Equal(5, api.Downloads.Count);
+        Assert.All(api.Downloads, call => Assert.Equal("sha", call.ExpectedSha256));
         Assert.All(api.Downloads, call => Assert.DoesNotContain("dang-tai.tmp", call.Destination));
         Assert.Equal(4, result.SuccessfulFileCount);
         Assert.Equal(1, result.FailedFileCount);
@@ -326,7 +327,11 @@ public sealed class SubmissionDownloadTests
         public Task DisconnectAsync(CancellationToken ct = default) { IsConnected = false; EventReceived?.Invoke(this, "Disconnected"); return Task.CompletedTask; }
     }
 
-    private sealed record DownloadCall(Guid SubmissionId, Guid FileId, string Destination);
+    private sealed record DownloadCall(
+        Guid SubmissionId,
+        Guid FileId,
+        string Destination,
+        string ExpectedSha256);
 
     private sealed class RecordingBackendClient : IBackendClient
     {
@@ -345,7 +350,7 @@ public sealed class SubmissionDownloadTests
             var segments = path.Split('/');
             var submissionId = Guid.Parse(segments[3]);
             var fileId = Guid.Parse(segments[5]);
-            Downloads.Add(new(submissionId, fileId, destinationPath));
+            Downloads.Add(new(submissionId, fileId, destinationPath, string.Empty));
             if (FailedFileIds.Contains(fileId)) throw new IOException("simulated download failure");
             return OnDownload?.Invoke(fileId, destinationPath, ct) ?? Task.CompletedTask;
         }
@@ -361,7 +366,15 @@ public sealed class SubmissionDownloadTests
         public Task<ApiResponse<TResponse>?> PutAsync<TRequest, TResponse>(string path, TRequest request, CancellationToken ct = default) => Task.FromResult<ApiResponse<TResponse>?>(null);
         public Task<ApiResponse<TResponse>?> DeleteAsync<TResponse>(string path, CancellationToken ct = default) => Task.FromResult<ApiResponse<TResponse>?>(null);
         public Task<ApiResponse<object>?> UploadChunkAsync(string path, Stream content, long contentLength, string? sha256 = null, CancellationToken ct = default) => Task.FromResult<ApiResponse<object>?>(null);
-        public Task DownloadVerifiedFileAsync(string path, string destinationPath, string expectedSha256, IProgress<double>? progress = null, CancellationToken ct = default) => Task.CompletedTask;
+        public Task DownloadVerifiedFileAsync(string path, string destinationPath, string expectedSha256, IProgress<double>? progress = null, CancellationToken ct = default)
+        {
+            var segments = path.Split('/');
+            var submissionId = Guid.Parse(segments[3]);
+            var fileId = Guid.Parse(segments[5]);
+            Downloads.Add(new(submissionId, fileId, destinationPath, expectedSha256));
+            if (FailedFileIds.Contains(fileId)) throw new IOException("simulated download failure");
+            return OnDownload?.Invoke(fileId, destinationPath, ct) ?? Task.CompletedTask;
+        }
         public Task PostDownloadFileAsync<TRequest>(string path, TRequest request, string destinationPath, IProgress<double>? progress = null, CancellationToken ct = default) => Task.CompletedTask;
         public void SetBearerToken(string? token) { }
         public void SetAccountToken(string? token) { }

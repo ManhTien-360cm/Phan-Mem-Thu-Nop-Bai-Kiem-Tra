@@ -27,6 +27,12 @@ public sealed class SubmissionSelectionRow : ObservableObject
         ?? Submission.ClientSubmittedAtUtc
         ?? DateTimeOffset.MinValue;
     public bool IsLate => Submission.IsLate;
+    public bool ComputedIsLate => Submission.ComputedIsLate;
+    public bool? LateOverride => Submission.LateOverride;
+    public string LateDisplay => IsLate ? "Nộp muộn" : "Đúng hạn";
+    public string LateSource => LateOverride.HasValue
+        ? "Giáo viên ghi đè"
+        : "Hệ thống tự động";
     public SubmissionStatus Status => Submission.Status;
     public string? ReceiptCode => Submission.ReceiptCode;
     public int CompletedFileCount =>

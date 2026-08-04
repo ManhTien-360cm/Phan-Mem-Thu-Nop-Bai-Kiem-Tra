@@ -28,6 +28,13 @@ public sealed class SessionsController(ISessionService service) : ApiControllerB
     public async Task<ActionResult<ApiResponse<CloudProjectionReadiness>>> RetryCloudProjection(Guid id, CancellationToken ct) =>
         Data(await service.RetryProjectionAsync(id, ct));
 
+    [HttpPut("{id:guid}/room-code")][Authorize(Policy = "TeacherOrAdmin")]
+    public async Task<ActionResult<ApiResponse<SessionDetailDto>>> ChangePublicCloudRoomCode(
+        Guid id,
+        ChangePublicCloudRoomCodeRequest request,
+        CancellationToken ct) =>
+        Data(await service.ChangePublicCloudRoomCodeAsync(id, request, ct));
+
     [HttpGet("{id:guid}")]
     public async Task<ActionResult<ApiResponse<SessionDetailDto>>> Get(Guid id, CancellationToken ct)
     {

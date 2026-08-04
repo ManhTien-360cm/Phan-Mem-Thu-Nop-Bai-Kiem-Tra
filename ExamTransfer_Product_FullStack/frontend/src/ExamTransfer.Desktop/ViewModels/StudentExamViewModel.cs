@@ -367,6 +367,7 @@ public sealed class StudentExamViewModel : ProductPageBase
                 }).ToArray();
             WorkspaceFiles.ReplaceWith(rows);
             StartWorkspaceWatcher();
+            UpdateSteps();
             await Task.CompletedTask;
         }
         catch (Exception ex)

@@ -22,12 +22,13 @@ public sealed class StudentResultsService(
     public async Task<IReadOnlyList<StudentReturnedResult>> GetReturnedResultsAsync(
         CancellationToken cancellationToken)
     {
-        if (!session.SessionId.HasValue || !session.ParticipantId.HasValue)
-            return [];
-
-        return session.DeliveryType == ExamDeliveryType.MultipleChoice
-            ? await GetQuizResultAsync(cancellationToken)
-            : await GetFileResultAsync(cancellationToken);
+        var page = session.AccessMode == SessionAccessMode.PublicCloud
+            ? await publicCloud.GetStudentResultsAsync(50, null, cancellationToken)
+            : ApiGuard.Require(await backend.GetAsync<StudentResultPageDto>(
+                "api/v1/student/results?pageSize=50",
+                cancellationToken));
+        StudentResultPageValidator.EnsureValid(page);
+        return page.Items.Select(result => Map(result, session.AccessMode)).ToArray();
     }
 
     public Task DownloadAttachmentAsync(
@@ -44,92 +45,45 @@ public sealed class StudentResultsService(
             cancellationToken);
     }
 
-    private async Task<IReadOnlyList<StudentReturnedResult>> GetQuizResultAsync(
-        CancellationToken cancellationToken)
+    private StudentReturnedResult Map(StudentResultDto result, SessionAccessMode sourceMode)
     {
-        var attempt = session.CurrentAttempt;
-        if (attempt?.Status != QuizAttemptStatus.Finalized)
-            return [];
+        StudentResultValidator.EnsureValid(result);
+        if (result.Status != StudentResultStatus.Returned
+            || !result.MaxScore.HasValue
+            || !result.ReturnedAtUtc.HasValue)
+            throw new StudentResultsIntegrationException("Student result payload không phải kết quả Returned đầy đủ.");
 
-        var review = session.AccessMode == SessionAccessMode.PublicCloud
-            ? await publicCloud.GetQuizAttemptReviewAsync(attempt.Id, cancellationToken)
-            : ApiGuard.Require(await backend.GetAsync<StudentQuizReviewDto>(
-                $"api/v1/student/quiz/attempts/{attempt.Id}/review",
-                cancellationToken));
-
-        // CorrectAnswersVisible is the only existing student DTO signal that the
-        // teacher has actually returned the result, rather than merely exposing
-        // an immediate post-submission score.
-        if (!review.CorrectAnswersVisible)
-            return [];
-
-        return
-        [
-            new(
-                attempt.Id,
-                session.SessionId!.Value,
-                session.ParticipantId!.Value,
-                string.IsNullOrWhiteSpace(session.ExamTitle) ? "Bài trắc nghiệm" : session.ExamTitle,
-                StudentResultKind.Quiz,
-                null,
-                GradingStatus.Returned,
-                review.Score,
-                review.MaxScore,
-                review.GeneralComment,
-                null,
-                session.AccessMode,
-                review.Questions,
-                [])
-        ];
-    }
-
-    private async Task<IReadOnlyList<StudentReturnedResult>> GetFileResultAsync(
-        CancellationToken cancellationToken)
-    {
-        if (!session.LastSubmissionId.HasValue)
-            return [];
-        if (session.AccessMode == SessionAccessMode.PublicCloud)
-            throw new StudentResultsIntegrationException(
-                "PublicCloud chưa cung cấp contract đọc kết quả tự luận/file đã trả.");
-
-        GradeDto grade;
-        try
-        {
-            grade = ApiGuard.Require(await backend.GetAsync<GradeDto>(
-                $"api/v1/student/submissions/{session.LastSubmissionId.Value}/grade",
-                cancellationToken));
-        }
-        catch (BackendApiException exception) when (exception.HttpStatusCode == 403)
-        {
-            return [];
-        }
-        if (grade.Status != GradingStatus.Returned)
-            return [];
-
-        return
-        [
-            new(
-                grade.SubmissionId,
-                session.SessionId!.Value,
-                session.ParticipantId!.Value,
-                string.IsNullOrWhiteSpace(session.ExamTitle) ? "Bài tự luận/file" : session.ExamTitle,
-                StudentResultKind.EssayFile,
-                null,
-                grade.Status,
-                grade.Score,
-                grade.MaxScore,
-                grade.GeneralComment,
-                grade.ReturnedAtUtc,
-                session.AccessMode,
-                [],
-                grade.Attachments.Select(attachment => new StudentResultAttachment(
-                    attachment.Id,
-                    attachment.Name,
-                    attachment.SizeBytes,
-                    attachment.MimeType,
-                    attachment.DownloadUrl ?? string.Empty,
-                    grade.SubmissionId)).ToArray())
-        ];
+        var resultId = result.ResultType == StudentResultType.EssayFile
+            ? result.SubmissionId!.Value
+            : result.AttemptId!.Value;
+        var participantId = session.SessionId == result.SessionId
+            ? session.ParticipantId ?? Guid.Empty
+            : Guid.Empty;
+        return new(
+            resultId,
+            result.SessionId,
+            participantId,
+            result.ExamTitle,
+            result.ResultType == StudentResultType.Quiz
+                ? StudentResultKind.Quiz
+                : StudentResultKind.EssayFile,
+            result.AttemptNumber,
+            GradingStatus.Returned,
+            result.Score,
+            result.MaxScore.Value,
+            result.GeneralComment,
+            result.ReturnedAtUtc,
+            sourceMode,
+            [],
+            result.Attachments.Select(attachment => new StudentResultAttachment(
+                attachment.AttachmentId,
+                attachment.FileName,
+                attachment.SizeBytes,
+                attachment.ContentType,
+                sourceMode == SessionAccessMode.LanOnly && result.SubmissionId.HasValue
+                    ? $"api/v1/student/submissions/{result.SubmissionId.Value}/grade/attachments/{attachment.AttachmentId}/content"
+                    : string.Empty,
+                resultId)).ToArray());
     }
 }
 

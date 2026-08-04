@@ -121,7 +121,8 @@ public sealed class LoginViewModel : ObservableObject
             authState.SetAuthenticated(
                 current,
                 result.AccessToken,
-                result.Authority);
+                result.Authority,
+                result.RefreshToken);
             authState.SetTransientCredentials(Account, Password);
             Password = string.Empty;
             Status = "Đăng nhập thành công.";

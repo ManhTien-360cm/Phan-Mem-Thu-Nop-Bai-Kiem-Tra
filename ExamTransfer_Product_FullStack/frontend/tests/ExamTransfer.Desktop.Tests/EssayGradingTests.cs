@@ -135,7 +135,8 @@ public sealed class EssayGradingTests
         var dialogs = new RecordingDialogService { Result = true };
         using var viewModel = CreateViewModel(api, dialogs: dialogs);
         await LoadSelectedAsync(viewModel);
-        viewModel.Editor.ScoreText = "8.5";
+        var score = 8.5m;
+        viewModel.Editor.ScoreText = score.ToString(CultureInfo.CurrentCulture);
         viewModel.Editor.Comment = "Nhận xét nhiều dòng\nDòng hai";
 
         Assert.True(viewModel.SaveGradeCommand.CanExecute(null));
@@ -145,6 +146,7 @@ public sealed class EssayGradingTests
 
         Assert.Equal(0, api.ReturnRequests);
         Assert.Equal(GradingStatus.Graded, viewModel.Detail?.Status);
+        Assert.Equal(score, viewModel.Grade?.Score);
         Assert.True(viewModel.ReturnGradeCommand.CanExecute(null));
         Assert.False(viewModel.Editor.IsDirty);
 

@@ -4,7 +4,7 @@
              xmlns:beh="clr-namespace:ExamTransfer.Desktop.Behaviors"
              beh:EntranceAnimation.IsEnabled="True">
     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-        <Grid Margin="32" MaxWidth="1180" HorizontalAlignment="Stretch">
+        <Grid Margin="20" MaxWidth="1180" HorizontalAlignment="Stretch">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="20" />
@@ -21,6 +21,7 @@
                 <TextBlock Text="Theo dõi trạng thái duyệt và kiểm tra thiết bị trước khi kỳ thi bắt đầu."
                            Style="{StaticResource BodyText}"
                            TextAlignment="Center"
+                           TextWrapping="Wrap"
                            Margin="0,7,0,0" />
             </StackPanel>
 
@@ -33,7 +34,7 @@
                 </Grid.ColumnDefinitions>
 
                 <!-- Join status Hero -->
-                <Border Style="{DynamicResource Card}" Padding="32">
+                <Border Style="{DynamicResource Card}" Padding="20">
                     <StackPanel>
                         <!-- Room Code section -->
                         <TextBlock Text="MÃ PHÒNG HIỆN TẠI"
@@ -48,6 +49,7 @@
                         <TextBlock Text="{Binding RoomCodeHint, Mode=OneWay}"
                                    Style="{StaticResource BodyText}"
                                    Foreground="{DynamicResource TextSecondaryBrush}"
+                                   TextWrapping="Wrap"
                                    Margin="0,5,0,0" />
                         
                         <!-- Divider -->
@@ -81,9 +83,10 @@
                                     <TextBlock Text="{Binding CandidateNameDisplay, Mode=OneWay}"
                                                FontSize="15"
                                                FontWeight="SemiBold"
-                                               TextTrimming="CharacterEllipsis" />
+                                               TextWrapping="Wrap" />
                                     <TextBlock Text="{Binding StudentCodeDisplay, Mode=OneWay, StringFormat=Mã sinh viên: {0}}"
                                                Style="{StaticResource CaptionText}"
+                                               TextWrapping="Wrap"
                                                Margin="0,3,0,0" />
                                 </StackPanel>
                             </Grid>
@@ -114,10 +117,11 @@
                                     <TextBlock Text="{Binding DeviceNameDisplay, Mode=OneWay}"
                                                FontSize="14"
                                                FontWeight="SemiBold"
-                                               TextTrimming="CharacterEllipsis" />
+                                               TextWrapping="Wrap" />
                                     <TextBlock Text="{Binding DeviceIdDisplay, Mode=OneWay, StringFormat=Thiết bị: {0}}"
                                                Style="{StaticResource CaptionText}"
                                                Margin="0,3,0,0"
+                                               TextWrapping="Wrap"
                                                TextTrimming="CharacterEllipsis"
                                                ToolTip="{Binding DeviceIdDisplay}" />
                                 </StackPanel>
@@ -151,10 +155,12 @@
                                     <TextBlock Text="{Binding ParticipantStatusDisplay, Mode=OneWay}"
                                                FontSize="14"
                                                FontWeight="SemiBold"
-                                               Foreground="{DynamicResource InfoBrush}" />
+                                               Foreground="{DynamicResource InfoBrush}"
+                                               TextWrapping="Wrap" />
                                     <TextBlock Text="{Binding ConnectionDetailDisplay, Mode=OneWay}"
                                                Style="{StaticResource CaptionText}"
                                                Foreground="{DynamicResource InfoBrush}"
+                                               TextWrapping="Wrap"
                                                Margin="0,3,0,0" />
                                 </StackPanel>
                             </Grid>
@@ -186,48 +192,54 @@
                                    Style="{StaticResource SectionTitleText}" />
                         <TextBlock Text="Hệ thống sẽ tự động bắt đầu khi giáo viên phát đề"
                                    Style="{StaticResource CaptionText}"
+                                   TextWrapping="Wrap"
                                    Margin="0,4,0,24" />
                         
                         <StackPanel>
                             <Border Style="{DynamicResource SubtleCard}" Margin="0,0,0,10" Padding="16">
-                                <StackPanel Orientation="Horizontal">
+                                <Grid>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                                     <Border Width="32" Height="32" CornerRadius="8" Background="{DynamicResource SuccessSoftBrush}" Margin="0,0,12,0">
                                         <TextBlock Text="&#xE73E;" Style="{StaticResource IconText}" FontSize="14" Foreground="{DynamicResource SuccessBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                                     </Border>
-                                    <TextBlock Text="Kết nối LAN/Wi-Fi" Style="{StaticResource BodyText}" FontWeight="SemiBold" VerticalAlignment="Center" />
-                                </StackPanel>
+                                    <TextBlock Grid.Column="1" Text="Kết nối LAN/Wi-Fi" Style="{StaticResource BodyText}" FontWeight="SemiBold" VerticalAlignment="Center" TextWrapping="Wrap" />
+                                </Grid>
                             </Border>
                             <Border Style="{DynamicResource SubtleCard}" Margin="0,0,0,10" Padding="16">
-                                <StackPanel Orientation="Horizontal">
+                                <Grid>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                                     <Border Width="32" Height="32" CornerRadius="8" Background="{DynamicResource SuccessSoftBrush}" Margin="0,0,12,0">
                                         <TextBlock Text="&#xE73E;" Style="{StaticResource IconText}" FontSize="14" Foreground="{DynamicResource SuccessBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                                     </Border>
-                                    <TextBlock Text="Quyền ghi thư mục làm bài" Style="{StaticResource BodyText}" FontWeight="SemiBold" VerticalAlignment="Center" />
-                                </StackPanel>
+                                    <TextBlock Grid.Column="1" Text="Quyền ghi thư mục làm bài" Style="{StaticResource BodyText}" FontWeight="SemiBold" VerticalAlignment="Center" TextWrapping="Wrap" />
+                                </Grid>
                             </Border>
                             <Border Style="{DynamicResource SubtleCard}" Margin="0,0,0,10" Padding="16">
-                                <StackPanel Orientation="Horizontal">
+                                <Grid>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                                     <Border Width="32" Height="32" CornerRadius="8" Background="{DynamicResource SuccessSoftBrush}" Margin="0,0,12,0">
                                         <TextBlock Text="&#xE73E;" Style="{StaticResource IconText}" FontSize="14" Foreground="{DynamicResource SuccessBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                                     </Border>
-                                    <TextBlock Text="Dung lượng trống" Style="{StaticResource BodyText}" FontWeight="SemiBold" VerticalAlignment="Center" />
-                                </StackPanel>
+                                    <TextBlock Grid.Column="1" Text="Dung lượng trống" Style="{StaticResource BodyText}" FontWeight="SemiBold" VerticalAlignment="Center" TextWrapping="Wrap" />
+                                </Grid>
                             </Border>
                             <Border Style="{DynamicResource SubtleCard}" Padding="16">
-                                <StackPanel Orientation="Horizontal">
+                                <Grid>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                                     <Border Width="32" Height="32" CornerRadius="8" Background="{DynamicResource SuccessSoftBrush}" Margin="0,0,12,0">
                                         <TextBlock Text="&#xE73E;" Style="{StaticResource IconText}" FontSize="14" Foreground="{DynamicResource SuccessBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                                     </Border>
-                                    <TextBlock Text="Phiên bản ứng dụng tương thích" Style="{StaticResource BodyText}" FontWeight="SemiBold" VerticalAlignment="Center" />
-                                </StackPanel>
+                                    <TextBlock Grid.Column="1" Text="Phiên bản ứng dụng tương thích" Style="{StaticResource BodyText}" FontWeight="SemiBold" VerticalAlignment="Center" TextWrapping="Wrap" />
+                                </Grid>
                             </Border>
                         </StackPanel>
                         
                         <Border Style="{DynamicResource SubtleCard}" Margin="0,24,0,0" Background="{DynamicResource InfoSoftBrush}" BorderBrush="{DynamicResource InfoBrush}">
-                            <StackPanel Orientation="Horizontal">
+                            <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                                 <TextBlock Text="&#xE946;" Style="{StaticResource IconText}" Foreground="{DynamicResource InfoBrush}" Margin="0,0,10,0" VerticalAlignment="Center"/>
-                                <TextBlock Text="Không đóng ứng dụng trong khi đang chờ duyệt." Style="{StaticResource BodyText}" Foreground="{DynamicResource InfoBrush}" VerticalAlignment="Center"/>
-                            </StackPanel>
+                                <TextBlock Grid.Column="1" Text="Không đóng ứng dụng trong khi đang chờ duyệt." Style="{StaticResource BodyText}" Foreground="{DynamicResource InfoBrush}" VerticalAlignment="Center" TextWrapping="Wrap"/>
+                            </Grid>
                         </Border>
                     </StackPanel>
                 </Border>
@@ -236,10 +248,11 @@
             <!-- Status bar -->
             <Border Grid.Row="4" HorizontalAlignment="Stretch" Padding="12,10" CornerRadius="8" BorderThickness="1"
                     BorderBrush="{DynamicResource BorderBrush}" Background="{DynamicResource SurfaceSubtleBrush}">
-                <StackPanel Orientation="Horizontal">
+                <Grid>
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                     <Border Width="3" Height="20" CornerRadius="2" Background="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}" VerticalAlignment="Center" Margin="0,0,10,0" />
-                    <TextBlock Text="{Binding Status}" FontSize="13" Foreground="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}" TextWrapping="Wrap" VerticalAlignment="Center" />
-                </StackPanel>
+                    <TextBlock Grid.Column="1" Text="{Binding Status}" FontSize="13" Foreground="{Binding StatusTone, Converter={StaticResource ToneBrushConverter}}" TextWrapping="Wrap" VerticalAlignment="Center" />
+                </Grid>
             </Border>
         </Grid>
     </ScrollViewer>

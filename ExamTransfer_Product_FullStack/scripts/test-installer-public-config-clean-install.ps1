@@ -14,19 +14,23 @@ Set-StrictMode -Version Latest
 $root = Split-Path -Parent $PSScriptRoot
 $installerSource = Join-Path $root 'installer\ExamTransfer.iss'
 $sharedValidation = Join-Path $PSScriptRoot 'public-config-packaging.ps1'
+$metadataHelper = Join-Path $PSScriptRoot 'installer-version-metadata.ps1'
 $resolvedReleaseRoot = [IO.Path]::GetFullPath($ReleaseRoot)
 $releasePublicConfigPath = Join-Path $resolvedReleaseRoot 'Client\publiccloud.runtime.json'
+$releaseManifestPath = Join-Path $resolvedReleaseRoot 'release-manifest.json'
 
 foreach ($requiredFile in @(
     $installerSource,
     $sharedValidation,
+    $metadataHelper,
     $releasePublicConfigPath,
-    (Join-Path $resolvedReleaseRoot 'release-manifest.json'))) {
+    $releaseManifestPath)) {
     if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
         throw "Required clean-install input was not found: $requiredFile"
     }
 }
 . $sharedValidation
+. $metadataHelper
 
 function Find-InnoCompiler {
     $candidates = @(@(
@@ -63,6 +67,9 @@ function Invoke-InstallerProcess(
 $expectedConfig = Read-PublicCloudConfig -Path $releasePublicConfigPath
 $expectedConfigHash = (Get-FileHash `
     -LiteralPath $releasePublicConfigPath `
+    -Algorithm SHA256).Hash
+$expectedManifestHash = (Get-FileHash `
+    -LiteralPath $releaseManifestPath `
     -Algorithm SHA256).Hash
 
 $fixtureRoot = Join-Path ([IO.Path]::GetTempPath()) (
@@ -101,6 +108,14 @@ try {
         throw "Public-config acceptance installer was not created: $testInstaller"
     }
 
+    $installerMetadata = Assert-InstallerVersionMetadata `
+        -InstallerPath $testInstaller `
+        -ExpectedVersion $Version
+    Write-Host (
+        'PASS clean-install fixture metadata ' +
+        "fileVersion=$($installerMetadata.FileVersionRaw) " +
+        "productVersion=$($installerMetadata.ProductVersionRaw)") -ForegroundColor Green
+
     Invoke-InstallerProcess `
         -Path $testInstaller `
         -Arguments @(
@@ -129,6 +144,20 @@ try {
         -Expected $expectedConfig `
         -Actual $installedConfig `
         -Stage 'installed-public-config'
+
+    $installedManifestPath = Join-Path $installRoot 'release-manifest.json'
+    if (-not (Test-Path -LiteralPath $installedManifestPath -PathType Leaf)) {
+        throw 'Installed release-manifest.json is missing.'
+    }
+    $installedManifestHash = (Get-FileHash `
+        -LiteralPath $installedManifestPath `
+        -Algorithm SHA256).Hash
+    if (-not [string]::Equals(
+            $expectedManifestHash,
+            $installedManifestHash,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Installed release-manifest.json is not byte-identical to the release payload.'
+    }
 
     $runtimeSettingsPath = Join-Path $runtimeRoot 'config\runtime-settings.json'
     if (-not (Test-Path -LiteralPath $runtimeSettingsPath -PathType Leaf)) {
@@ -161,7 +190,8 @@ try {
 
     Write-Host (
         'PASS installer public-config clean-install ' +
-        'release-payload=byte-identical runtime-settings=three-fields-verified ' +
+        'release-payload=byte-identical manifest=byte-identical ' +
+        'runtime-settings=three-fields-verified ' +
         'fixture-config=not-used') -ForegroundColor Green
 }
 finally {

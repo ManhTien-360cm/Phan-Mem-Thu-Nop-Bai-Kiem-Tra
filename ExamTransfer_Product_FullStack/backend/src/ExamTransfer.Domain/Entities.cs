@@ -137,6 +137,7 @@ public sealed class QuizAttempt : EntityBase
     public ExamSession Session { get; set; } = null!;
     public Guid ParticipantId { get; set; }
     public SessionParticipant Participant { get; set; } = null!;
+    public int AttemptNumber { get; set; } = 1;
     public int ExamVersion { get; set; }
     public QuizAttemptStatus Status { get; set; } = QuizAttemptStatus.InProgress;
     public DateTimeOffset StartedAtUtc { get; set; }
@@ -169,6 +170,17 @@ public sealed class QuizAnswer : EntityBase
     public string ChoiceIdsJson { get; set; } = "[]";
     public long Revision { get; set; }
     public DateTimeOffset ClientUpdatedAtUtc { get; set; }
+}
+
+public sealed class QuizGradeMutationReceipt : EntityBase
+{
+    public Guid AttemptId { get; set; }
+    public Guid ActorId { get; set; }
+    public string Action { get; set; } = string.Empty;
+    public string RequestHash { get; set; } = string.Empty;
+    public string ResultJson { get; set; } = string.Empty;
+    public Guid? EventId { get; set; }
+    public string AttemptRowVersion { get; set; } = string.Empty;
 }
 
 public sealed class ExamFile : EntityBase
@@ -327,6 +339,8 @@ public sealed class Submission : EntityBase
     public DateTimeOffset ClientSubmittedAtUtc { get; set; }
     public DateTimeOffset? ServerReceivedAtUtc { get; set; }
     public DateTimeOffset DeadlineUtc { get; set; }
+    public bool ComputedIsLate { get; set; }
+    public bool? LateOverride { get; set; }
     public bool IsLate { get; set; }
     public bool IsOfficial { get; set; }
     public string? ReceiptCode { get; set; }
@@ -362,12 +376,17 @@ public sealed class SubmissionFile : EntityBase
     public int TotalChunks { get; set; }
     public string ReceivedChunksJson { get; set; } = "[]";
     public TransferStatus TransferStatus { get; set; } = TransferStatus.Queued;
+    public bool ArchiveVerified { get; set; }
     public SyncStatus SyncStatus { get; set; } = SyncStatus.LocalOnly;
     public string? CloudObjectPath { get; set; }
 }
 
 public sealed class Grade : EntityBase
 {
+    public string SourceMode { get; set; } = "Lan";
+    public long CloudVersion { get; set; }
+    public DateTimeOffset? CloudUpdatedAtUtc { get; set; }
+    public string CloudSyncState { get; set; } = "LocalOnly";
     public Guid SubmissionId { get; set; }
     public Submission Submission { get; set; } = null!;
     public GradingStatus Status { get; set; } = GradingStatus.NotGraded;
@@ -377,8 +396,20 @@ public sealed class Grade : EntityBase
     public Guid? GraderId { get; set; }
     public DateTimeOffset? GradedAtUtc { get; set; }
     public DateTimeOffset? ReturnedAtUtc { get; set; }
+    public long Revision { get; set; }
     public ICollection<RubricScore> RubricScores { get; set; } = new List<RubricScore>();
     public ICollection<GradedAttachment> Attachments { get; set; } = new List<GradedAttachment>();
+}
+
+public sealed class EssayGradeMutationReceipt : EntityBase
+{
+    public Guid SubmissionId { get; set; }
+    public Guid ActorId { get; set; }
+    public string Action { get; set; } = string.Empty;
+    public string RequestHash { get; set; } = string.Empty;
+    public string ResultJson { get; set; } = string.Empty;
+    public Guid? EventId { get; set; }
+    public long GradeRevision { get; set; }
 }
 
 public sealed class RubricScore : EntityBase

@@ -26,6 +26,9 @@ $publicConfigPackagingTests = Join-Path $root 'scripts\test-public-config-packag
 $dockerPackagingContractTests = Join-Path $root 'scripts\test-docker-packaging-contract.ps1'
 $installerGuardTests = Join-Path $root 'scripts\test-installer-localserver-guard.ps1'
 $installerCleanInstallTest = Join-Path $root 'scripts\test-installer-public-config-clean-install.ps1'
+$installerMetadataHelper = Join-Path $root 'scripts\installer-version-metadata.ps1'
+$installerMetadataTests = Join-Path $root 'scripts\test-installer-version-metadata.ps1'
+$releaseArtifactValidator = Join-Path $root 'scripts\validate-release-artifacts.ps1'
 
 function Require-File([string]$Path) {
     if (-not (Test-Path $Path -PathType Leaf)) {
@@ -57,7 +60,15 @@ Require-File $publicConfigPackagingTests
 Require-File $dockerPackagingContractTests
 Require-File $installerGuardTests
 Require-File $installerCleanInstallTest
+Require-File $installerMetadataHelper
+Require-File $installerMetadataTests
+Require-File $releaseArtifactValidator
 . $publicConfigPackaging
+. $installerMetadataHelper
+
+# Validate and normalize the one authoritative release version before any
+# restore, publish, artifact cleanup, or ISCC work begins.
+$assemblyVersion = ConvertTo-WindowsNumericVersion -SemanticVersion $Version
 
 $publicCloudUrl = [string]$env:EXAMTRANSFER_SUPABASE_URL
 $publicCloudKey = [string]$env:EXAMTRANSFER_SUPABASE_PUBLISHABLE_KEY
@@ -83,6 +94,14 @@ if ($LASTEXITCODE -ne 0) {
     -File $dockerPackagingContractTests
 if ($LASTEXITCODE -ne 0) {
     throw 'Docker packaging contract tests failed before release creation.'
+}
+
+& powershell `
+    -NoProfile `
+    -ExecutionPolicy Bypass `
+    -File $installerMetadataTests
+if ($LASTEXITCODE -ne 0) {
+    throw 'Installer version metadata producer tests failed before release creation.'
 }
 
 $dotnet = Get-Command dotnet -ErrorAction SilentlyContinue
@@ -142,8 +161,6 @@ if (-not $SkipTests) {
 else {
     Write-Warning 'Tests were skipped by -SkipTests. Do not use this option for an official release.'
 }
-
-$assemblyVersion = "$Version.0"
 
 Write-Host "\n[4/8] Publish frontend WPF..." -ForegroundColor Yellow
 dotnet publish $frontendProject `
@@ -220,6 +237,12 @@ $manifest = [ordered]@{
         sha256         = $publicCloudConfigHash
         classification = 'publishable-client-config'
     }
+    installer         = [ordered]@{
+        file           = "ExamTransfer-Setup-$Version.exe"
+        fileVersion    = $assemblyVersion
+        productVersion = $Version
+        productName    = 'ExamTransfer'
+    }
 }
 $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $releaseManifest -Encoding utf8
 Copy-Item -LiteralPath $releaseManifest -Destination (Join-Path $clientOutput 'release-manifest.json')
@@ -242,6 +265,12 @@ $iscc = Find-InnoCompiler
 if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed.' }
 
 Require-File $installer
+
+$installerMetadata = Assert-InstallerVersionMetadata `
+    -InstallerPath $installer `
+    -ExpectedVersion $Version
+Write-Host "Installer FileVersion: $($installerMetadata.FileVersionRaw)"
+Write-Host "Installer ProductVersion: $($installerMetadata.ProductVersionRaw)"
 
 $postIsccPublicCloudConfig = Read-PublicCloudConfig -Path $publicCloudConfig
 Assert-PublicCloudConfigEqual `
@@ -276,6 +305,21 @@ Assert-PublicCloudConfigEqual `
 
 $hash = Get-FileHash $installer -Algorithm SHA256
 "$($hash.Hash)  $([IO.Path]::GetFileName($installer))" | Set-Content -Path $installerHashFile -Encoding ascii
+
+& powershell `
+    -NoProfile `
+    -ExecutionPolicy Bypass `
+    -File $releaseArtifactValidator `
+    -ExpectedVersion $Version `
+    -ExpectedHead $gitCommit `
+    -ExpectedBuildId $buildId `
+    -RepositoryRoot $root `
+    -ReleaseRoot $releaseRoot `
+    -InstallerPath $installer `
+    -HashFilePath $installerHashFile
+if ($LASTEXITCODE -ne 0) {
+    throw 'Release artifact identity validation failed.'
+}
 
 Write-Host "\nBUILD SUCCEEDED" -ForegroundColor Green
 Write-Host "Installer : $installer"

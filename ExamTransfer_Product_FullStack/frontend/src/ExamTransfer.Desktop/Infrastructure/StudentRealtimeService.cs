@@ -66,11 +66,19 @@ public sealed class StudentRealtimeService : IStudentRealtimeService
             {
                 await publicRealtime.StartAsync(
                     nextSessionId.Value,
+                    nextParticipantId.Value,
                     Environment.MachineName + "-" + Environment.UserName,
                     publicCloud,
                     async token => _ = await publicCloud.GetStudentTimelineAsync(
                         nextSessionId.Value,
                         token),
+                    (revision, eventId, limit, token) =>
+                        publicCloud.GetStudentNotificationEventsAsync(
+                            nextSessionId.Value,
+                            revision,
+                            eventId,
+                            limit,
+                            token),
                     ct);
                 return;
             }
@@ -79,7 +87,9 @@ public sealed class StudentRealtimeService : IStudentRealtimeService
                 ClearIdentity();
                 return;
             }
-            realtime = new RealtimeService(api.BaseAddress.ToString());
+            realtime = new RealtimeService(
+                api.BaseAddress.ToString(),
+                RealtimeAuthenticationMode.ParticipantHeader);
             realtime.EventReceived += Forward;
             realtime.NotificationReceived += ForwardNotification;
             await realtime.ConnectAsync(session.AccessToken, ct);

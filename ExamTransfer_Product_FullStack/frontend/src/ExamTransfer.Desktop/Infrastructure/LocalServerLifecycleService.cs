@@ -231,12 +231,22 @@ public sealed class LocalServerLifecycleService
 
     private string? FindServerExecutable()
     {
-        var expected = ExpectedServerExecutable();
-        return File.Exists(expected) ? expected : null;
+        foreach (var candidate in GetCandidateServerExecutables())
+        {
+            if (File.Exists(candidate)) return candidate;
+        }
+        return null;
     }
 
     private string ExpectedServerExecutable() =>
-        Path.GetFullPath(Path.Combine(baseDirectory, "..", "Server", "ExamTransfer.LocalServer.exe"));
+        FindServerExecutable() ?? Path.GetFullPath(Path.Combine(baseDirectory, "..", "Server", "ExamTransfer.LocalServer.exe"));
+
+    private IEnumerable<string> GetCandidateServerExecutables()
+    {
+        yield return Path.GetFullPath(Path.Combine(baseDirectory, "..", "Server", "ExamTransfer.LocalServer.exe"));
+        yield return Path.GetFullPath(Path.Combine(baseDirectory, "Server", "ExamTransfer.LocalServer.exe"));
+        yield return Path.GetFullPath(Path.Combine(baseDirectory, "ExamTransfer.LocalServer.exe"));
+    }
 
 }
 
@@ -337,15 +347,58 @@ public sealed class LocalServerRuntime(int port) : ILocalServerRuntime
 
     public ILocalServerProcess Start(string executablePath, string workingDirectory)
     {
-        var process = Process.Start(new ProcessStartInfo
+        var startInfo = new ProcessStartInfo
         {
             FileName = executablePath,
             WorkingDirectory = workingDirectory,
             UseShellExecute = false,
             CreateNoWindow = true,
             WindowStyle = ProcessWindowStyle.Hidden
-        }) ?? throw new InvalidOperationException("Process.Start did not return a Local Server process.");
+        };
+        ApplyPublicCloudEnvironment(startInfo);
+        var process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("Process.Start did not return a Local Server process.");
         return new LocalServerProcess(process);
+    }
+
+    public static void ApplyPublicCloudEnvironment(
+        ProcessStartInfo startInfo,
+        Func<string, string?>? environment = null)
+    {
+        ArgumentNullException.ThrowIfNull(startInfo);
+        var read = environment ?? Environment.GetEnvironmentVariable;
+        var url = read("EXAMTRANSFER_SUPABASE_URL")?.Trim();
+        var publishableKey = read("EXAMTRANSFER_SUPABASE_PUBLISHABLE_KEY")?.Trim();
+        var organizationId = read("EXAMTRANSFER_ORGANIZATION_ID")?.Trim();
+
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var projectUri)
+            || (projectUri.Scheme != Uri.UriSchemeHttps && !projectUri.IsLoopback)
+            || string.IsNullOrWhiteSpace(publishableKey)
+            || publishableKey.StartsWith("sb_secret_", StringComparison.OrdinalIgnoreCase)
+            || publishableKey.Contains("service_role", StringComparison.OrdinalIgnoreCase)
+            || !Guid.TryParse(organizationId, out var organization)
+            || organization == Guid.Empty)
+        {
+            return;
+        }
+
+        startInfo.Environment["Cloud__Enabled"] = "true";
+        startInfo.Environment["Cloud__SupabaseUrl"] = projectUri
+            .ToString()
+            .TrimEnd('/');
+        startInfo.Environment["Cloud__PublishableKey"] = publishableKey;
+        startInfo.Environment["Cloud__SupabasePublishableKey"] = publishableKey;
+        startInfo.Environment["Cloud__OrganizationId"] = organization.ToString();
+        startInfo.Environment["Cloud__AccessMode"] = CloudAccessModes.UserSession;
+
+        // Strip any sensitive credentials inherited from the parent process so they
+        // are never forwarded to the child LocalServer process.
+        var sensitiveKeys = startInfo.Environment.Keys
+            .Where(k => k.Contains("SECRET", StringComparison.OrdinalIgnoreCase)
+                     || k.Contains("SERVICE", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        foreach (var key in sensitiveKeys)
+            startInfo.Environment.Remove(key);
     }
 
     public async Task StopExactAsync(

@@ -1,20 +1,24 @@
 begin;
-select plan(36);
+select plan(45);
 
-select is((select schema_version from public.examtransfer_cloud_meta where id=1), 23,
-  'cloud schema compatibility version is 23');
+select is((select schema_version from public.examtransfer_cloud_meta where id=1), 27,
+  'teacher mutations remain compatible at schema 27');
 select has_function('public','approve_public_participant',array['uuid','uuid','uuid'],'approve participant RPC exists');
 select has_function('public','reject_public_participant',array['uuid','uuid','text','uuid'],'reject participant RPC exists');
 select has_function('public','bulk_approve_public_participants',array['uuid','uuid[]','uuid'],'bulk approve RPC exists');
 select has_function('public','add_public_participant_extra_time',array['uuid','uuid','integer','text','uuid'],'extra time RPC exists');
 select has_function('public','allow_public_resubmission',array['uuid','text','uuid'],'resubmission RPC exists');
 select has_function('public','reject_public_submission',array['uuid','text','uuid'],'reject submission RPC exists');
+select has_function('public','set_public_submission_late_override',array['uuid','boolean','text','uuid'],
+  'late override RPC exists');
 select has_function('public','approve_public_enrollment_request',array['uuid','uuid'],'approve enrollment RPC exists');
 select has_function('public','reject_public_enrollment_request',array['uuid','text','uuid'],'reject enrollment RPC exists');
 select ok(not has_function_privilege('anon','public.approve_public_participant(uuid,uuid,uuid)','EXECUTE'),
   'anon cannot execute teacher RPC');
 select ok(has_function_privilege('authenticated','public.approve_public_participant(uuid,uuid,uuid)','EXECUTE'),
   'authenticated role can execute guarded teacher RPC');
+select ok(not has_function_privilege('anon','public.set_public_submission_late_override(uuid,boolean,text,uuid)','EXECUTE'),
+  'anon cannot execute late override RPC');
 
 insert into auth.users(id,email) values
   ('31000000-0000-0000-0000-000000000001','teacher-owner@example.test'),
@@ -98,6 +102,22 @@ select throws_ok($$select public.approve_public_participant(
   '31300000-0000-0000-0000-000000000000','31400000-0000-0000-0000-000000000002',
   '41000000-0000-0000-0000-000000000004')$$,'42501','PUBLIC_SESSION_FORBIDDEN',
   'teacher who does not manage the exam is blocked');
+select set_config('request.jwt.claims','{"sub":"32000000-0000-0000-0000-000000000001","role":"authenticated"}',true);
+select throws_ok($$select public.set_public_submission_late_override(
+  '31500000-0000-0000-0000-000000000001',true,'cross tenant override',
+  '41000000-0000-0000-0000-000000000020')$$,'42501','PUBLIC_SESSION_FORBIDDEN',
+  'cross-organization teacher cannot override late state');
+
+select set_config('request.jwt.claims','{"sub":"31000000-0000-0000-0000-000000000002","role":"authenticated"}',true);
+select throws_ok($$select public.set_public_submission_late_override(
+  '31500000-0000-0000-0000-000000000001',true,'student forged override',
+  '41000000-0000-0000-0000-000000000021')$$,'42501','TEACHER_ROLE_REQUIRED',
+  'student cannot override late state');
+select set_config('request.jwt.claims','{"sub":"31000000-0000-0000-0000-000000000003","role":"authenticated"}',true);
+select throws_ok($$select public.set_public_submission_late_override(
+  '31500000-0000-0000-0000-000000000001',true,'unassigned teacher override',
+  '41000000-0000-0000-0000-000000000022')$$,'42501','PUBLIC_SESSION_FORBIDDEN',
+  'unassigned teacher cannot override late state');
 
 select set_config('request.jwt.claims','{"sub":"31000000-0000-0000-0000-000000000001","role":"authenticated"}',true);
 select throws_ok($$select public.bulk_approve_public_participants(
@@ -146,18 +166,33 @@ select is((select cloud_version from public.session_participants
            where id='31400000-0000-0000-0000-000000000001'),
           (select value from teacher_rpc_versions where key='extra_before'),
   'extra time retry with the same request ID does not increment cloud_version');
+select is(public.set_public_submission_late_override(
+  '31500000-0000-0000-0000-000000000001',true,'manual late review',
+  '41000000-0000-0000-0000-000000000023')->>'effectiveIsLate','true',
+  'teacher can mark a submission late');
+select is(public.set_public_submission_late_override(
+  '31500000-0000-0000-0000-000000000001',false,'manual on-time review',
+  '41000000-0000-0000-0000-000000000024')->>'effectiveIsLate','false',
+  'teacher can mark a submission on time');
+select is(public.set_public_submission_late_override(
+  '31500000-0000-0000-0000-000000000001',null,'restore computed state',
+  '41000000-0000-0000-0000-000000000025')->>'lateOverride',null,
+  'teacher can remove the override');
+select is((select count(*)::integer from public.audit_logs
+  where action='SetPublicSubmissionLateOverride' and entity_id='31500000-0000-0000-0000-000000000001'),3,
+  'late override changes are audited');
 update teacher_rpc_versions set value=(select cloud_version from public.session_participants where id='31400000-0000-0000-0000-000000000001')
 where key='allow_before';
-select is(public.allow_public_resubmission(
-  '31400000-0000-0000-0000-000000000001','teacher approved retry',
-  '41000000-0000-0000-0000-000000000009')->>'resubmitAllowed','true','resubmission is enabled');
-select ok((select cloud_version from public.session_participants where id='31400000-0000-0000-0000-000000000001')
-  > (select value from teacher_rpc_versions where key='allow_before'),'resubmission increases cloud_version');
 select is(public.reject_public_submission(
   '31500000-0000-0000-0000-000000000001','archive is unreadable',
   '41000000-0000-0000-0000-000000000010')->>'status','Rejected','submission is rejected');
 select ok((select cloud_version from public.submissions where id='31500000-0000-0000-0000-000000000001')
   > (select value from teacher_rpc_versions where key='submission_before'),'submission rejection increases cloud_version');
+select is(public.allow_public_resubmission(
+  '31400000-0000-0000-0000-000000000001','teacher approved retry',
+  '41000000-0000-0000-0000-000000000009')->>'resubmitAllowed','true','resubmission is enabled after rejection');
+select ok((select cloud_version from public.session_participants where id='31400000-0000-0000-0000-000000000001')
+  > (select value from teacher_rpc_versions where key='allow_before'),'resubmission increases cloud_version');
 select throws_ok($$select public.reject_public_submission(
   '32500000-0000-0000-0000-000000000001','forged cross tenant rejection',
   '41000000-0000-0000-0000-000000000011')$$,'42501','PUBLIC_SESSION_FORBIDDEN',

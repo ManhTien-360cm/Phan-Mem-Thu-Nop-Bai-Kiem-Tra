@@ -18,13 +18,16 @@ namespace ExamTransfer.LocalServer.Controllers;
 public sealed class DiscoveryController(
     AppDbContext db,
     ILanAccessPolicy lanAccessPolicy,
-    IOptions<ExamTransferOptions> options) : ApiControllerBase
+    IOptions<ExamTransferOptions> options,
+    ILogger<DiscoveryController>? logger = null) : ApiControllerBase
 {
     [HttpGet("open-sessions")]
     public async Task<ActionResult<ApiResponse<IReadOnlyList<OpenSessionDiscoveryDto>>>> OpenSessions(CancellationToken ct)
     {
         var remoteAddress = HttpContext.Connection.RemoteIpAddress?.ToString();
-        if (!lanAccessPolicy.IsAllowed(remoteAddress))
+        var decision = lanAccessPolicy.Evaluate(remoteAddress);
+        LogDecision(decision);
+        if (!decision.Allowed)
             throw new ApiException(ErrorCodes.LanAccessDenied, "Thiết bị không nằm trong mạng nội bộ được phép.", 403);
 
         var endpoint = LanNetworkConfiguration.ResolveAdvertisedEndpoint(
@@ -51,7 +54,9 @@ public sealed class DiscoveryController(
     public ActionResult<ApiResponse<LocalServerIdentityDto>> Identity()
     {
         var remoteAddress = HttpContext.Connection.RemoteIpAddress?.ToString();
-        if (!lanAccessPolicy.IsAllowed(remoteAddress))
+        var decision = lanAccessPolicy.Evaluate(remoteAddress);
+        LogDecision(decision);
+        if (!decision.Allowed)
             throw new ApiException(ErrorCodes.LanAccessDenied, "Thiết bị không nằm trong mạng nội bộ được phép.", 403);
 
         var requestAddress = HttpContext.Connection.RemoteIpAddress;
@@ -79,4 +84,17 @@ public sealed class DiscoveryController(
 
     internal static string MachineId() =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Environment.MachineName + "|ExamTransfer|discovery")))[..16].ToLowerInvariant();
+
+    private void LogDecision(LanAccessDecision decision) =>
+        logger?.Log(
+            decision.Allowed ? LogLevel.Information : LogLevel.Warning,
+            "LAN discovery access evaluated. RuntimeMode={RuntimeMode}; RemoteIp={RemoteIp}; EffectiveClientIp={EffectiveClientIp}; AllowedCidrs={AllowedCidrs}; MatchedRange={MatchedRange}; DeniedReason={DeniedReason}; SessionId={SessionId}; TraceId={TraceId}",
+            decision.RuntimeMode,
+            decision.RemoteIp ?? "unknown",
+            decision.EffectiveClientIp ?? "unknown",
+            decision.AllowedCidrs.Count == 0 ? "<none>" : string.Join(',', decision.AllowedCidrs),
+            decision.MatchedRange ?? "<none>",
+            decision.DeniedReason,
+            "<discovery>",
+            HttpContext.TraceIdentifier);
 }

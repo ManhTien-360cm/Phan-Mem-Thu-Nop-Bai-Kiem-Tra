@@ -92,6 +92,8 @@ public sealed class AccountAuthHandler(
             claims.Add(new Claim(ClaimTypes.Email, user.Email));
         if (!string.IsNullOrWhiteSpace(user.StudentCode))
             claims.Add(new Claim("student_code", user.StudentCode));
+        if (!string.IsNullOrWhiteSpace(user.SupabaseAuthUserId))
+            claims.Add(new Claim("provider_user_id", user.SupabaseAuthUserId));
 
         return Success(claims);
     }

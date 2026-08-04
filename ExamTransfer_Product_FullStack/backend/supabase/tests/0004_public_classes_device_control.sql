@@ -1,5 +1,5 @@
 begin;
-select plan(56);
+select plan(57);
 
 select has_function('public', 'join_public_session', array['uuid','text','text','text','jsonb'], 'join RPC exists');
 select has_function('public', 'init_public_submission', array['uuid','text','text','bigint','text'], 'submission init RPC exists');
@@ -106,6 +106,16 @@ insert into tap_values values ('submission', public.init_public_submission('1300
 select is(public.init_public_submission('13000000-0000-0000-0000-000000000000','submission-key-0001','answer.zip',1024,repeat('a',64)), (select value from tap_values where key='submission'), 'submission init is idempotent');
 select results_eq($$with changed as (update public.submissions set status='Submitted',is_official=true,is_late=false,receipt_code='forged',receipt_signature='forged',server_received_at=now(),deadline_at=now()+interval '1 day' where id=(select value from tap_values where key='submission') returning 1) select count(*)::bigint from changed$$, array[0::bigint], 'Student cannot directly set submission status, receipt, deadline, late, or official fields');
 select results_eq($$with changed as (update public.submission_files set archive_signature_verified=true where submission_id=(select value from tap_values where key='submission') returning 1) select count(*)::bigint from changed$$, array[0::bigint], 'Student cannot set archive verification');
+select lives_ok($$
+  insert into storage.objects(id,bucket_id,name,owner_id)
+  select
+    '17000000-0000-4000-8000-000000000001'::uuid,
+    'public-submission-archives',
+    f.cloud_object_path,
+    '10000000-0000-0000-0000-000000000002'
+  from public.submission_files f
+  where f.submission_id=(select value from tap_values where key='submission')
+$$, 'Student can upload the exact initialized PublicCloud archive path');
 select throws_ok($$select public.finalize_public_submission((select value from tap_values where key='submission'),'submission-key-0001')$$, '55000', 'ARCHIVE_NOT_VERIFIED_BY_BACKEND', 'unverified archive cannot be finalized');
 insert into tap_values values ('quiz_attempt', public.start_public_quiz_attempt('13000000-0000-0000-0000-000000000001','quiz-start-0001'));
 select is(public.start_public_quiz_attempt('13000000-0000-0000-0000-000000000001','quiz-start-0001'), (select value from tap_values where key='quiz_attempt'), 'quiz start is idempotent');

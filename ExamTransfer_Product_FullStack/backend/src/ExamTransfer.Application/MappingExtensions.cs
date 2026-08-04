@@ -82,7 +82,8 @@ public static class MappingExtensions
     public static SubmissionFileDto ToDto(this SubmissionFile entity, IReadOnlyList<int> chunks) =>
         new(entity.Id, entity.OriginalName, entity.SizeBytes, entity.Sha256, entity.MimeType,
             entity.TotalChunks, chunks, entity.TransferStatus,
-            entity.TransferStatus == TransferStatus.Completed ? $"/api/v1/submissions/{entity.SubmissionId}/files/{entity.Id}/content" : null);
+            entity.TransferStatus == TransferStatus.Completed ? $"/api/v1/submissions/{entity.SubmissionId}/files/{entity.Id}/content" : null,
+            entity.ArchiveVerified);
 
     public static ViolationDto ToDto(this Violation entity) =>
         new(entity.Id, entity.SessionId, entity.ParticipantId, entity.Type, entity.Severity, entity.OccurredAtUtc,

@@ -37,9 +37,9 @@ public sealed class ExamTransferOptionsValidator : IValidateOptions<ExamTransfer
             {
                 errors.Add($"{optionName}[{index}] is not a valid private IPv4 CIDR: '{cidr}'.");
             }
-            else if (trustedGateway && prefix < 24)
+            else if (trustedGateway && prefix != 32)
             {
-                errors.Add($"{optionName}[{index}] must be /24 or narrower; broad trusted NAT ranges are forbidden.");
+                errors.Add($"{optionName}[{index}] must identify exactly one verified Docker gateway with /32.");
             }
             index++;
         }

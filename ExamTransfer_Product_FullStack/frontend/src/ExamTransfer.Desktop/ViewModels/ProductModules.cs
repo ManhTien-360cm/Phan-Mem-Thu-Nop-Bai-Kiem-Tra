@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Windows.Input;
@@ -825,10 +825,16 @@ public sealed class ExamManagementViewModel : ProductPageBase
                 "Thay bộ câu hỏi hiện tại",
                 "Commit sẽ thay toàn bộ câu hỏi của phiên bản hiện tại. Tiếp tục?"))
             return;
-        _ = ApiGuard.Require(await api.PostAsync<QuizImportCommitRequest, QuizImportResultDto>(
+        var commitResult = ApiGuard.Require(await api.PostAsync<QuizImportCommitRequest, QuizImportResultDto>(
             $"api/v1/exams/{SelectedExam.Id}/quiz-import/commit",
             new(preview.PreviewToken, preview.WillReplaceExisting, currentExamRowVersion),
             ct));
+        // Cap nhat ngay lap tuc de CanPublish/PublishHint hien thi dung truoc khi refresh
+        currentHasCommittedQuizSource = true;
+        currentQuizQuestionCount = commitResult.QuestionCount;
+        Raise(nameof(CanPublish));
+        Raise(nameof(PublishHint));
+        RaiseCommands();
         QuizImport.Clear();
         await RefreshExamsCoreAsync(SelectedExam.Id, ct);
     });
@@ -915,18 +921,23 @@ public sealed class SessionManagementViewModel : ProductPageBase
     private bool allVisibleChecked;
     private readonly Func<TimeSpan, CancellationToken, Task> projectionDelay;
     private readonly int projectionPollAttempts;
+    private bool suppressProjectionSelectionRefresh;
+    private long projectionSelectionVersion;
     private Guid? projectionSessionId;
+    private string? projectionRowVersion;
+    private string? projectionRoomCode;
     private string projectionStatus = "Phiên LAN không cần PublicCloud projection.";
     private string projectionTone = "info";
     private bool canShareRoomCode = true;
     private bool canRetryProjection;
+    private bool canRecoverRoomCode;
     private string createResult = "Kỳ thi đã mở và đang chờ học sinh";
 
     public SessionManagementViewModel(
         IBackendClient api,
         IDialogService? archiveDialogs = null,
         Func<TimeSpan, CancellationToken, Task>? projectionDelay = null,
-        int projectionPollAttempts = 24)
+        int projectionPollAttempts = 60)
     {
         this.api = api;
         this.archiveDialogs = archiveDialogs ?? AppServices.Dialogs;
@@ -955,6 +966,9 @@ public sealed class SessionManagementViewModel : ProductPageBase
         RetryProjectionCommand = new AsyncRelayCommand(
             RetryProjectionAsync,
             () => !IsBusy && projectionSessionId.HasValue && CanRetryProjection);
+        RecoverRoomCodeCommand = new AsyncRelayCommand(
+            RecoverRoomCodeAsync,
+            () => !IsBusy && projectionSessionId.HasValue && CanRecoverRoomCode);
     }
 
     public ObservableCollection<ExamSummaryDto> Exams { get; } = new();
@@ -966,10 +980,48 @@ public sealed class SessionManagementViewModel : ProductPageBase
         set
         {
             if (!Set(ref selectedSession, value)) return;
+            var selectionVersion = ++projectionSelectionVersion;
             if (value is not null)
             {
                 AutoApprove = value.AutoApprove;
                 AccessMode = value.AccessMode;
+                RoomCode = value.RoomCode;
+                if (value.AccessMode == SessionAccessMode.PublicCloud)
+                {
+                    projectionSessionId = value.Id;
+                    projectionRowVersion = value.RowVersion;
+                    projectionRoomCode = value.RoomCode;
+                    ApplyProjection(new(
+                        value.Id,
+                        true,
+                        false,
+                        SyncStatus.Pending,
+                        "PUBLICCLOUD_PROJECTION_PENDING",
+                        "Đang kiểm tra trạng thái PublicCloud trước khi chia sẻ mã phòng.",
+                        0));
+                    if (!suppressProjectionSelectionRefresh)
+                        _ = RefreshProjectionForSelectionAsync(
+                            value.Id,
+                            selectionVersion,
+                            DisposeToken);
+                }
+                else
+                {
+                    ClearProjectionIdentity();
+                    ApplyLanProjection(value.Id);
+                }
+            }
+            else
+            {
+                ClearProjectionIdentity();
+                ApplyProjection(new(
+                    Guid.Empty,
+                    true,
+                    false,
+                    SyncStatus.Pending,
+                    "NO_SESSION_SELECTED",
+                    "Chọn một phòng thi để xem trạng thái sẵn sàng.",
+                    0));
             }
             RaiseCommands();
         }
@@ -986,20 +1038,14 @@ public sealed class SessionManagementViewModel : ProductPageBase
             if (!Set(ref accessMode, value))
                 return;
             if (value == SessionAccessMode.LanOnly)
-                ApplyProjection(new(
-                    Guid.Empty,
-                    false,
-                    true,
-                    SyncStatus.LocalOnly,
-                    "LAN_ONLY",
-                    "Phiên LAN không cần PublicCloud projection.",
-                    0));
+                ApplyLanProjection(SelectedSession?.Id ?? Guid.Empty);
         }
     }
     public string ProjectionStatus => projectionStatus;
     public string ProjectionTone => projectionTone;
     public bool CanShareRoomCode => canShareRoomCode;
     public bool CanRetryProjection => canRetryProjection;
+    public bool CanRecoverRoomCode => canRecoverRoomCode;
     public int SelectedArchiveCount => Sessions.Count(row => row.IsChecked);
     public bool AllVisibleChecked => allVisibleChecked;
     public ICommand RefreshCommand { get; }
@@ -1017,6 +1063,7 @@ public sealed class SessionManagementViewModel : ProductPageBase
     public ICommand CancelCommand { get; }
     public ICommand SaveSettingsCommand { get; }
     public ICommand RetryProjectionCommand { get; }
+    public ICommand RecoverRoomCodeCommand { get; }
 
     protected override async Task LoadAsync(CancellationToken ct)
     {
@@ -1026,7 +1073,11 @@ public sealed class SessionManagementViewModel : ProductPageBase
         });
     }
 
-    private async Task RefreshSessionsCoreAsync(Guid? examId, Guid? sessionId, CancellationToken ct)
+    private async Task RefreshSessionsCoreAsync(
+        Guid? examId,
+        Guid? sessionId,
+        CancellationToken ct,
+        bool refreshProjection = true)
     {
         var exams = ApiGuard.Require(await api.GetExamsAsync(ct));
         var sessions = ApiGuard.Require(await api.GetSessionsAsync(ct));
@@ -1035,9 +1086,22 @@ public sealed class SessionManagementViewModel : ProductPageBase
         SelectedExam = examId.HasValue
             ? Exams.FirstOrDefault(x => x.Id == examId.Value) ?? Exams.FirstOrDefault()
             : Exams.FirstOrDefault();
-        SelectedSession = sessionId.HasValue
-            ? Sessions.FirstOrDefault(x => x.Id == sessionId.Value) ?? Sessions.FirstOrDefault()
-            : Sessions.FirstOrDefault();
+        suppressProjectionSelectionRefresh = true;
+        try
+        {
+            SelectedSession = sessionId.HasValue
+                ? Sessions.FirstOrDefault(x => x.Id == sessionId.Value) ?? Sessions.FirstOrDefault()
+                : Sessions.FirstOrDefault();
+        }
+        finally
+        {
+            suppressProjectionSelectionRefresh = false;
+        }
+        if (refreshProjection && SelectedSession?.AccessMode == SessionAccessMode.PublicCloud)
+            await RefreshProjectionForSelectionAsync(
+                SelectedSession.Id,
+                projectionSelectionVersion,
+                ct);
     }
 
     private Task CreateAsync() => RunAsync(
@@ -1061,8 +1125,14 @@ public sealed class SessionManagementViewModel : ProductPageBase
                 SessionAdmissionMode.OpenRequest),
             ct));
         RoomCode = detail.Summary.RoomCode;
-        await RefreshSessionsCoreAsync(SelectedExam.Id, detail.Summary.Id, ct);
+        await RefreshSessionsCoreAsync(
+            SelectedExam.Id,
+            detail.Summary.Id,
+            ct,
+            refreshProjection: false);
         projectionSessionId = detail.Summary.Id;
+        projectionRowVersion = detail.Summary.RowVersion;
+        projectionRoomCode = detail.Summary.RoomCode;
         if (detail.Summary.AccessMode == SessionAccessMode.PublicCloud)
         {
             createResult = "Phòng đã được lưu cục bộ; đang kiểm tra PublicCloud.";
@@ -1101,6 +1171,114 @@ public sealed class SessionManagementViewModel : ProductPageBase
             });
     }
 
+    private async Task RecoverRoomCodeAsync()
+    {
+        if (!projectionSessionId.HasValue || string.IsNullOrWhiteSpace(projectionRowVersion))
+            return;
+        await RunAsync(
+            "Đang đổi mã và đồng bộ lại PublicCloud",
+            () => ProjectionStatus,
+            async ct =>
+            {
+                var normalizedInput = string.IsNullOrWhiteSpace(RoomCode) ? null : RoomCode.Trim();
+                var requestedCode = string.Equals(
+                    normalizedInput,
+                    projectionRoomCode,
+                    StringComparison.Ordinal)
+                    ? null
+                    : normalizedInput;
+                var detail = ApiGuard.Require(await api.PutAsync<ChangePublicCloudRoomCodeRequest, SessionDetailDto>(
+                    $"api/v1/sessions/{projectionSessionId}/room-code",
+                    new(requestedCode, projectionRowVersion),
+                    ct));
+                projectionSessionId = detail.Summary.Id;
+                projectionRowVersion = detail.Summary.RowVersion;
+                projectionRoomCode = detail.Summary.RoomCode;
+                RoomCode = detail.Summary.RoomCode;
+                suppressProjectionSelectionRefresh = true;
+                try
+                {
+                    ReplaceSelected(detail.Summary);
+                }
+                finally
+                {
+                    suppressProjectionSelectionRefresh = false;
+                }
+                ApplyProjection(new(
+                    detail.Summary.Id,
+                    true,
+                    false,
+                    SyncStatus.Pending,
+                    "PUBLICCLOUD_PROJECTION_PENDING",
+                    "Mã mới đã được lưu; đang chờ PublicCloud xác nhận sẵn sàng.",
+                    0));
+                await AwaitProjectionAsync(detail.Summary.Id, ct);
+            });
+    }
+
+    private async Task RefreshProjectionForSelectionAsync(
+        Guid sessionId,
+        long selectionVersion,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var response = await api.GetAsync<CloudProjectionReadinessView>(
+                $"api/v1/sessions/{sessionId}/cloud-projection",
+                cancellationToken);
+            if (selectionVersion != projectionSelectionVersion
+                || SelectedSession?.Id != sessionId
+                || SelectedSession.AccessMode != SessionAccessMode.PublicCloud)
+                return;
+            if (response is null)
+            {
+                ApplyProjection(new(
+                    sessionId,
+                    true,
+                    false,
+                    SyncStatus.Pending,
+                    "PUBLICCLOUD_PROJECTION_UNAVAILABLE",
+                    "Chưa đọc được trạng thái PublicCloud; không chia sẻ mã phòng.",
+                    0));
+                return;
+            }
+            ApplyProjection(ApiGuard.Require(response));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            FrontendLogger.Log(ex, nameof(RefreshProjectionForSelectionAsync));
+            if (selectionVersion == projectionSelectionVersion
+                && SelectedSession?.Id == sessionId)
+                ApplyProjection(new(
+                    sessionId,
+                    true,
+                    false,
+                    SyncStatus.Failed,
+                    "PUBLICCLOUD_PROJECTION_UNAVAILABLE",
+                    "Không đọc được trạng thái PublicCloud; không chia sẻ mã phòng.",
+                    0));
+        }
+    }
+
+    private void ClearProjectionIdentity()
+    {
+        projectionSessionId = null;
+        projectionRowVersion = null;
+        projectionRoomCode = null;
+    }
+
+    private void ApplyLanProjection(Guid sessionId) => ApplyProjection(new(
+        sessionId,
+        false,
+        true,
+        SyncStatus.LocalOnly,
+        "LAN_ONLY",
+        "Phiên LAN không cần PublicCloud projection.",
+        0));
+
     private async Task AwaitProjectionAsync(Guid sessionId, CancellationToken cancellationToken)
     {
         for (var attempt = 0; attempt < projectionPollAttempts; attempt++)
@@ -1126,6 +1304,8 @@ public sealed class SessionManagementViewModel : ProductPageBase
 
     private void ApplyProjection(CloudProjectionReadinessView readiness)
     {
+        var isRoomCodeConflict = readiness.Status == SyncStatus.Conflict
+            && readiness.Code == ErrorCodes.RoomCodeConflict;
         projectionStatus = readiness.Message;
         projectionTone = readiness.Ready
             ? "success"
@@ -1134,12 +1314,18 @@ public sealed class SessionManagementViewModel : ProductPageBase
                 : "warning";
         canShareRoomCode = !readiness.Required || readiness.Ready;
         canRetryProjection = readiness.Required && !readiness.Ready
+            && !isRoomCodeConflict
             && (readiness.Status is SyncStatus.Failed or SyncStatus.Conflict
                 || readiness.Code == "PUBLICCLOUD_PROJECTION_TIMEOUT");
+        canRecoverRoomCode = readiness.Required && !readiness.Ready
+            && isRoomCodeConflict
+            && projectionSessionId.HasValue
+            && !string.IsNullOrWhiteSpace(projectionRowVersion);
         Raise(nameof(ProjectionStatus));
         Raise(nameof(ProjectionTone));
         Raise(nameof(CanShareRoomCode));
         Raise(nameof(CanRetryProjection));
+        Raise(nameof(CanRecoverRoomCode));
         RaiseCommands();
     }
 
@@ -1280,7 +1466,7 @@ public sealed class SessionManagementViewModel : ProductPageBase
 
     protected override void RaiseCommands()
     {
-        foreach (var command in new[] { RefreshCommand, CreateCommand, BulkArchiveCommand, OpenCommand, DistributeCommand, StartCommand, PauseCommand, ResumeCommand, CollectCommand, EndCommand, CancelCommand, SaveSettingsCommand, RetryProjectionCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
+        foreach (var command in new[] { RefreshCommand, CreateCommand, BulkArchiveCommand, OpenCommand, DistributeCommand, StartCommand, PauseCommand, ResumeCommand, CollectCommand, EndCommand, CancelCommand, SaveSettingsCommand, RetryProjectionCommand, RecoverRoomCodeCommand }.OfType<AsyncRelayCommand>()) command.RaiseCanExecuteChanged();
         (ToggleArchiveSelectionCommand as RelayCommand<SelectableSessionRow>)?.RaiseCanExecuteChanged();
         (ToggleAllVisibleArchiveSelectionCommand as RelayCommand)?.RaiseCanExecuteChanged();
     }
@@ -1494,8 +1680,14 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
         this.realtime.NotificationReceived += OnRealtimeNotification;
         RefreshCommand = new AsyncRelayCommand(() => LoadAsync(DisposeToken), () => !IsBusy);
         LoadCommand = new AsyncRelayCommand(LoadSubmissionsAsync, () => !IsBusy && SelectedSession is not null);
-        RejectCommand = new AsyncRelayCommand(RejectAsync, () => !IsBusy && SelectedSubmission is not null);
-        ResubmitCommand = new AsyncRelayCommand(ResubmitAsync, () => !IsBusy && SelectedSubmission is not null);
+        RejectCommand = new AsyncRelayCommand(RejectAsync, CanReject);
+        ResubmitCommand = new AsyncRelayCommand(ResubmitAsync, CanAllowResubmit);
+        UseComputedLateCommand = new AsyncRelayCommand(
+            () => SetLateOverrideAsync(null), CanSetLateOverride);
+        MarkLateCommand = new AsyncRelayCommand(
+            () => SetLateOverrideAsync(true), CanSetLateOverride);
+        MarkOnTimeCommand = new AsyncRelayCommand(
+            () => SetLateOverrideAsync(false), CanSetLateOverride);
         CopyReceiptCommand = new RelayCommand(CopyReceipt);
         SelectAllCommand = new RelayCommand(
             SelectAll,
@@ -1523,8 +1715,24 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
             RaiseCommands();
         }
     }
-    public SubmissionSelectionRow? SelectedSubmission { get => selectedSubmission; set { if (Set(ref selectedSubmission, value)) RaiseCommands(); } }
+    public SubmissionSelectionRow? SelectedSubmission
+    {
+        get => selectedSubmission;
+        set
+        {
+            if (!Set(ref selectedSubmission, value)) return;
+            Raise(nameof(ResubmitGuidance));
+            RaiseCommands();
+        }
+    }
     public string Reason { get => reason; set => Set(ref reason, value); }
+    public string ResubmitGuidance => SelectedSubmission?.Status switch
+    {
+        SubmissionStatus.Rejected => "Bài đã bị từ chối; có thể cấp quyền tạo attempt mới.",
+        SubmissionStatus.Submitted or SubmissionStatus.LateSubmitted =>
+            "Hãy từ chối attempt hiện tại trước khi cho phép học sinh nộp lại.",
+        _ => "Chỉ bài ở trạng thái Rejected mới được phép nộp lại."
+    };
     public int SelectedCount => Submissions.Count(row => row.IsSelected);
     public int DownloadableSelectedCount =>
         Submissions.Count(row => row.IsSelected && row.CanDownload);
@@ -1536,6 +1744,9 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
     public ICommand LoadCommand { get; }
     public ICommand RejectCommand { get; }
     public ICommand ResubmitCommand { get; }
+    public ICommand UseComputedLateCommand { get; }
+    public ICommand MarkLateCommand { get; }
+    public ICommand MarkOnTimeCommand { get; }
     public ICommand CopyReceiptCommand { get; }
     public ICommand SelectAllCommand { get; }
     public ICommand ClearSelectionCommand { get; }
@@ -1594,6 +1805,31 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
         await LoadSubmissionsCoreAsync(ct);
     });
 
+    private bool CanReject() =>
+        !IsBusy && SelectedSubmission?.Status is SubmissionStatus.Submitted or SubmissionStatus.LateSubmitted;
+
+    private bool CanAllowResubmit() =>
+        !IsBusy && SelectedSubmission?.Status == SubmissionStatus.Rejected;
+
+    private bool CanSetLateOverride() =>
+        !IsBusy && SelectedSubmission?.Status is SubmissionStatus.Submitted or SubmissionStatus.LateSubmitted;
+
+    private Task SetLateOverrideAsync(bool? lateOverride) => RunAsync(
+        "Đang cập nhật trạng thái nộp muộn",
+        "Trạng thái nộp muộn đã được cập nhật và ghi audit",
+        async ct =>
+        {
+            if (SelectedSubmission is null) return;
+            var mutationKey = $"late-override:{SelectedSubmission.SubmissionId:N}:{lateOverride?.ToString() ?? "computed"}";
+            var mutationId = GetMutationRequestId(mutationKey);
+            _ = ApiGuard.Require(await api.PutAsync<SetSubmissionLateOverrideRequest, SubmissionSummaryDto>(
+                $"api/v1/submissions/{SelectedSubmission.SubmissionId}/late-override",
+                new(lateOverride, Reason, mutationId),
+                ct));
+            CompleteMutationRequest(mutationKey);
+            await LoadSubmissionsCoreAsync(ct);
+        });
+
     private Task ResubmitAsync() => RunAsync("Đang cấp quyền nộp lại", "Học sinh đã được phép tạo attempt mới", async ct =>
     {
         if (SelectedSubmission is null) return;
@@ -1601,6 +1837,7 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
         var mutationId = GetMutationRequestId(mutationKey);
         _ = ApiGuard.Require(await api.PostAsync<AllowResubmitRequest, object>($"api/v1/participants/{SelectedSubmission.ParticipantId}/allow-resubmit", new(Reason, mutationId), ct));
         CompleteMutationRequest(mutationKey);
+        await LoadSubmissionsCoreAsync(ct);
     });
 
     private async Task DownloadSelectedAsync()
@@ -1727,7 +1964,7 @@ public sealed class SubmissionCenterViewModel : ProductPageBase
 
     protected override void RaiseCommands()
     {
-        foreach (var command in new[] { RefreshCommand, LoadCommand, RejectCommand, ResubmitCommand, DownloadSelectedCommand }.OfType<AsyncRelayCommand>())
+        foreach (var command in new[] { RefreshCommand, LoadCommand, RejectCommand, ResubmitCommand, UseComputedLateCommand, MarkLateCommand, MarkOnTimeCommand, DownloadSelectedCommand }.OfType<AsyncRelayCommand>())
             command.RaiseCanExecuteChanged();
         foreach (var command in new[] { SelectAllCommand, ClearSelectionCommand }.OfType<RelayCommand>())
             command.RaiseCanExecuteChanged();
@@ -2943,6 +3180,17 @@ public sealed class StudentDownloadViewModel : ProductPageBase
                 return;
             }
             api.SetParticipantToken(state.AccessToken);
+            if (state.ParticipantStatus is not null && state.ParticipantStatus != ParticipantStatus.Approved)
+            {
+                var statusLabel = state.ParticipantStatus == ParticipantStatus.PendingApproval
+                    ? "đang chờ giáo viên duyệt"
+                    : state.ParticipantStatus == ParticipantStatus.Rejected
+                        ? "đã bị từ chối"
+                        : state.ParticipantStatus.ToString();
+                Status = $"Không thể tải đề – tài khoản {statusLabel}. Sau khi được duyệt, ấn Làm mới để nhận đề.";
+                StatusTone = "warning";
+                return;
+            }
             var session = ApiGuard.Require(await api.GetSessionAsync(state.SessionId.Value, token));
             state.ExamId = session.Summary.ExamId;
             var manifest = ApiGuard.Require(await api.GetAsync<ExamManifestDto>($"api/v1/exams/{session.Summary.ExamId}/manifest", token));
@@ -2960,15 +3208,22 @@ public sealed class StudentDownloadViewModel : ProductPageBase
     private Task DownloadAsync() => RunAsync("Đang tải file đề", "File đề đã được tải về", async ct =>
     {
         if (SelectedFile is null || !state.ExamId.HasValue) return;
+        Directory.CreateDirectory(Destination);
+        var destinationPath = Path.Combine(
+            Destination,
+            SubmissionBatchDownloader.MakeSafePathComponent(
+                SelectedFile.Name,
+                $"exam-file-{SelectedFile.Id:N}",
+                160));
         if (state.AccessMode == SessionAccessMode.PublicCloud)
         {
             var signed = await AppServices.PublicCloud.GetExamFileUrlAsync(state.SessionId!.Value, SelectedFile.Id, ct);
-            await AppServices.PublicCloud.DownloadVerifiedAsync(signed, Path.Combine(Destination, SelectedFile.Name), ct);
+            await AppServices.PublicCloud.DownloadVerifiedAsync(signed, destinationPath, ct);
             Progress = 100;
             return;
         }
         var reporter = new Progress<double>(x => Progress = x);
-        await api.DownloadVerifiedFileAsync($"api/v1/exams/{state.ExamId}/files/{SelectedFile.Id}/content", Path.Combine(Destination, SelectedFile.Name), SelectedFile.Sha256, reporter, ct);
+        await api.DownloadVerifiedFileAsync($"api/v1/exams/{state.ExamId}/files/{SelectedFile.Id}/content", destinationPath, SelectedFile.Sha256, reporter, ct);
     });
 
     private Task DownloadAllAsync() => RunAsync("Đang tải toàn bộ đề", "Tất cả file đề đã được tải về", async ct =>
@@ -2976,17 +3231,26 @@ public sealed class StudentDownloadViewModel : ProductPageBase
         if (!state.ExamId.HasValue) return;
         Directory.CreateDirectory(Destination);
         var index = 0;
+        var usedFileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var file in Files)
         {
             index++;
+            var safeFileName = SubmissionBatchDownloader.MakeSafePathComponent(
+                file.Name,
+                $"exam-file-{file.Id:N}",
+                160);
+            safeFileName = SubmissionBatchDownloader.MakeUniqueFileName(
+                safeFileName,
+                usedFileNames);
+            var destinationPath = Path.Combine(Destination, safeFileName);
             if (state.AccessMode == SessionAccessMode.PublicCloud)
             {
                 var signed = await AppServices.PublicCloud.GetExamFileUrlAsync(state.SessionId!.Value, file.Id, ct);
-                await AppServices.PublicCloud.DownloadVerifiedAsync(signed, Path.Combine(Destination, file.Name), ct);
+                await AppServices.PublicCloud.DownloadVerifiedAsync(signed, destinationPath, ct);
             }
             else
             {
-                await api.DownloadVerifiedFileAsync($"api/v1/exams/{state.ExamId}/files/{file.Id}/content", Path.Combine(Destination, file.Name), file.Sha256, null, ct);
+                await api.DownloadVerifiedFileAsync($"api/v1/exams/{state.ExamId}/files/{file.Id}/content", destinationPath, file.Sha256, null, ct);
             }
             Progress = index * 100d / Files.Count;
         }
@@ -3464,7 +3728,21 @@ internal static class CollectionExtensions
 {
     public static void ReplaceWith<T>(this ObservableCollection<T> target, IEnumerable<T> source)
     {
+        var list = source is System.Collections.Generic.IReadOnlyList<T> l ? l : System.Linq.Enumerable.ToList(source);
+        if (target.Count == list.Count)
+        {
+            var same = true;
+            for (var i = 0; i < list.Count; i++)
+            {
+                if (!Equals(target[i], list[i]))
+                {
+                    same = false;
+                    break;
+                }
+            }
+            if (same) return;
+        }
         target.Clear();
-        foreach (var item in source) target.Add(item);
+        foreach (var item in list) target.Add(item);
     }
 }

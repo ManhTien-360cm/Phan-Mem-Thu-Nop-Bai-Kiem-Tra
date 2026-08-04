@@ -1,3 +1,4 @@
+using System.Text.Json;
 using ExamTransfer.Application;
 using ExamTransfer.Domain;
 using ExamTransfer.Infrastructure;
@@ -9,9 +10,11 @@ using ExamTransfer.Infrastructure.Persistence;
 using ExamTransfer.Infrastructure.Security;
 using ExamTransfer.Infrastructure.Services;
 using ExamTransfer.LocalServer;
+using ExamTransfer.LocalServer.Controllers;
 using ExamTransfer.LocalServer.Discovery;
 using ExamTransfer.LocalServer.Workers;
 using ExamTransfer.Shared.Contracts;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -23,6 +26,18 @@ namespace ExamTransfer.Infrastructure.Tests;
 
 public sealed class SixFindingsV133BackendTests
 {
+    [Fact]
+    public void PublicCloudRoomCodeRecovery_RequiresTeacherOrAdminPolicy()
+    {
+        var method = typeof(SessionsController).GetMethod(
+            nameof(SessionsController.ChangePublicCloudRoomCode));
+
+        var authorize = Assert.Single(method!.GetCustomAttributes(
+            typeof(AuthorizeAttribute),
+            inherit: true).Cast<AuthorizeAttribute>());
+        Assert.Equal("TeacherOrAdmin", authorize.Policy);
+    }
+
     [Fact]
     public async Task CloudSyncSignal_CoalescesBurstAndKeepsPeriodicTimeout()
     {
@@ -177,6 +192,297 @@ public sealed class SixFindingsV133BackendTests
             row => row.Id == detail.Summary.Id);
         Assert.Equal(SessionStatus.Waiting, local.Status);
         Assert.Equal(SessionAccessMode.PublicCloud, local.AccessMode);
+    }
+
+    [Fact]
+    public async Task PublicRoomProjectionConflict_BecomesTypedConflictAndIsNotRetriedWithSameCode()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var exam = await SeedPublishedExamAsync(database.Context);
+        var signal = new CloudSyncSignal();
+        var cloud = new RoomConflictPushCloud();
+        var options = Options.Create(new ExamTransferOptions
+        {
+            Cloud = new CloudOptions
+            {
+                Enabled = true,
+                WorkerIntervalSeconds = 30,
+                WorkerBatchSize = 10
+            }
+        });
+        var service = CreateSessionService(
+            database.Context,
+            cloud,
+            signal,
+            options);
+        var detail = await service.CreateAndOpenAsync(
+            Request(exam.Id),
+            "teacher-device",
+            default);
+
+        var services = new ServiceCollection();
+        services.AddDbContext<AppDbContext>(builder =>
+            builder.UseSqlite($"Data Source={database.Path}"));
+        services.AddSingleton<ICloudAdapter>(cloud);
+        await using var provider = services.BuildServiceProvider();
+        var worker = new CloudSyncWorker(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            options,
+            signal,
+            NullLogger<CloudSyncWorker>.Instance);
+        await worker.StartAsync(default);
+        try
+        {
+            await WaitUntilAsync(async () =>
+            {
+                await using var verify = database.CreateContext();
+                return await verify.SyncQueueSet.AnyAsync(
+                    item => item.EntityType == "exam_sessions"
+                        && item.EntityId == detail.Summary.Id.ToString()
+                        && item.Status == SyncStatus.Conflict);
+            });
+        }
+        finally
+        {
+            await worker.StopAsync(default);
+            worker.Dispose();
+        }
+
+        await using var assertionContext = database.CreateContext();
+        var projection = Assert.Single(await assertionContext.SyncQueueSet
+            .Where(item => item.EntityType == "exam_sessions"
+                && item.EntityId == detail.Summary.Id.ToString())
+            .ToListAsync());
+        Assert.Equal(SyncStatus.Conflict, projection.Status);
+        Assert.NotEqual(SyncStatus.Synced, projection.Status);
+        Assert.Equal(1, projection.RetryCount);
+        var typedFailure = JsonSerializer.Deserialize<CloudSyncFailure>(
+            projection.LastError!,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        Assert.NotNull(typedFailure);
+        Assert.Equal(ErrorCodes.RoomCodeConflict, typedFailure.Code);
+        Assert.Contains("Mã phòng PublicCloud", typedFailure.Message, StringComparison.Ordinal);
+        Assert.Null(projection.CompletedAtUtc);
+        Assert.Null(projection.NextRetryAtUtc);
+        Assert.Equal(1, cloud.SessionPushCount);
+
+        var readinessService = CreateSessionService(
+            assertionContext,
+            cloud,
+            signal,
+            options);
+        var readiness = await readinessService.GetProjectionReadinessAsync(
+            detail.Summary.Id,
+            default);
+        Assert.Equal(SyncStatus.Conflict, readiness.Status);
+        Assert.Equal(ErrorCodes.RoomCodeConflict, readiness.Code);
+        Assert.Contains("mã khác", readiness.Message, StringComparison.OrdinalIgnoreCase);
+
+        var sameCodeRetry = await readinessService.RetryProjectionAsync(
+            detail.Summary.Id,
+            default);
+        Assert.Equal(SyncStatus.Conflict, sameCodeRetry.Status);
+        assertionContext.ChangeTracker.Clear();
+        var unchanged = await assertionContext.SyncQueueSet.SingleAsync(
+            item => item.EntityType == "exam_sessions"
+                && item.EntityId == detail.Summary.Id.ToString());
+        Assert.Equal(SyncStatus.Conflict, unchanged.Status);
+        Assert.Null(unchanged.NextRetryAtUtc);
+        Assert.Equal(1, unchanged.RetryCount);
+    }
+
+    [Fact]
+    public async Task PublicRoomCodeRecovery_ReusesSessionAndQueueThenBecomesReady()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var exam = await SeedPublishedExamAsync(database.Context);
+        var signal = new CloudSyncSignal();
+        var cloud = new RecoverableRoomConflictPushCloud();
+        var options = Options.Create(new ExamTransferOptions
+        {
+            Cloud = new CloudOptions
+            {
+                Enabled = true,
+                WorkerIntervalSeconds = 30,
+                WorkerBatchSize = 10
+            }
+        });
+        var service = CreateSessionService(database.Context, cloud, signal, options);
+        var created = await service.CreateAndOpenAsync(
+            Request(exam.Id),
+            "teacher-device",
+            default);
+
+        var services = new ServiceCollection();
+        services.AddDbContext<AppDbContext>(builder =>
+            builder.UseSqlite($"Data Source={database.Path}"));
+        services.AddSingleton<ICloudAdapter>(cloud);
+        await using (var provider = services.BuildServiceProvider())
+        {
+            var worker = new CloudSyncWorker(
+                provider.GetRequiredService<IServiceScopeFactory>(),
+                options,
+                signal,
+                NullLogger<CloudSyncWorker>.Instance);
+            await worker.StartAsync(default);
+            try
+            {
+                await WaitUntilAsync(async () =>
+                {
+                    await using var verify = database.CreateContext();
+                    return await verify.SyncQueueSet.AnyAsync(
+                        item => item.EntityType == "exam_sessions"
+                            && item.EntityId == created.Summary.Id.ToString()
+                            && item.Status == SyncStatus.Conflict);
+                });
+            }
+            finally
+            {
+                await worker.StopAsync(default);
+                worker.Dispose();
+            }
+        }
+
+        await using (var recoveryContext = database.CreateContext())
+        {
+            var recovery = CreateSessionService(recoveryContext, cloud, signal, options);
+            var conflicted = await recoveryContext.SyncQueueSet
+                .AsNoTracking()
+                .SingleAsync(item => item.EntityType == "exam_sessions"
+                    && item.EntityId == created.Summary.Id.ToString());
+            using var conflictedPayload = JsonDocument.Parse(conflicted.PayloadJson);
+            var conflictedUpdatedAt = conflictedPayload.RootElement
+                .GetProperty("updated_at")
+                .GetDateTimeOffset();
+            var changed = await recovery.ChangePublicCloudRoomCodeAsync(
+                created.Summary.Id,
+                new("NEW133", created.Summary.RowVersion),
+                default);
+            Assert.Equal(created.Summary.Id, changed.Summary.Id);
+            Assert.Equal("NEW133", changed.Summary.RoomCode);
+            Assert.Equal(
+                1,
+                await recoveryContext.ExamSessionsSet.CountAsync());
+            var rearmed = Assert.Single(await recoveryContext.SyncQueueSet
+                .Where(item => item.EntityType == "exam_sessions"
+                    && item.EntityId == created.Summary.Id.ToString())
+                .ToListAsync());
+            Assert.Equal(SyncStatus.Pending, rearmed.Status);
+            Assert.Equal(0, rearmed.RetryCount);
+            Assert.Contains("\"room_code\":\"NEW133\"", rearmed.PayloadJson, StringComparison.Ordinal);
+            using var rearmedPayload = JsonDocument.Parse(rearmed.PayloadJson);
+            var rearmedUpdatedAt = rearmedPayload.RootElement
+                .GetProperty("updated_at")
+                .GetDateTimeOffset();
+            var refreshedSession = await recoveryContext.ExamSessionsSet
+                .AsNoTracking()
+                .SingleAsync(session => session.Id == created.Summary.Id);
+            Assert.Equal(refreshedSession.UpdatedAtUtc, rearmedUpdatedAt);
+            Assert.True(rearmedUpdatedAt > conflictedUpdatedAt);
+        }
+
+        await using (var provider = services.BuildServiceProvider())
+        {
+            var worker = new CloudSyncWorker(
+                provider.GetRequiredService<IServiceScopeFactory>(),
+                options,
+                signal,
+                NullLogger<CloudSyncWorker>.Instance);
+            await worker.StartAsync(default);
+            try
+            {
+                await WaitUntilAsync(async () =>
+                {
+                    await using var verify = database.CreateContext();
+                    return await verify.SyncQueueSet.AnyAsync(
+                        item => item.EntityType == "exam_sessions"
+                            && item.EntityId == created.Summary.Id.ToString()
+                            && item.Status == SyncStatus.Synced);
+                });
+            }
+            finally
+            {
+                await worker.StopAsync(default);
+                worker.Dispose();
+            }
+        }
+
+        await using var readinessContext = database.CreateContext();
+        var readinessService = CreateSessionService(readinessContext, cloud, signal, options);
+        var ready = await readinessService.GetProjectionReadinessAsync(
+            created.Summary.Id,
+            default);
+        Assert.True(ready.Ready);
+        Assert.Equal("PUBLICCLOUD_PROJECTION_READY", ready.Code);
+        Assert.Equal(2, cloud.SessionPushCount);
+    }
+
+    [Fact]
+    public async Task PublicRoomCodeRecovery_RejectsLanStaleActivityAndLocalDuplicate()
+    {
+        await using var database = await PublicCloudTestHarness.CreateDatabaseAsync();
+        var exam = await SeedPublishedExamAsync(database.Context);
+        var cloud = new SuccessfulPushCloud();
+        var signal = new RecordingCloudSyncSignal();
+        var options = Options.Create(new ExamTransferOptions());
+
+        var lan = Session(exam, "LANSAFE", SessionAccessMode.LanOnly);
+        var active = Session(exam, "TAKEN133", SessionAccessMode.PublicCloud);
+        var withActivity = Session(exam, "ACT133", SessionAccessMode.PublicCloud);
+        var recoverable = Session(exam, "OLD133", SessionAccessMode.PublicCloud);
+        withActivity.Participants.Add(new SessionParticipant
+        {
+            Session = withActivity,
+            StudentCode = "ACTIVITY",
+            DisplayName = "Activity Student",
+            DeviceId = "activity-device",
+            MachineName = "activity-machine",
+            AppVersion = "test"
+        });
+        database.Context.ExamSessionsSet.AddRange(lan, active, withActivity, recoverable);
+        foreach (var session in new[] { lan, withActivity, recoverable })
+        {
+            var item = ProjectionItem(
+                session.Id,
+                SyncStatus.Conflict,
+                DateTimeOffset.UtcNow,
+                retryCount: 1);
+            item.LastError = RoomConflictFailure();
+            database.Context.SyncQueueSet.Add(item);
+        }
+        await database.Context.SaveChangesAsync();
+        var service = CreateSessionService(database.Context, cloud, signal, options);
+
+        var lanError = await Assert.ThrowsAsync<ApiException>(() =>
+            service.ChangePublicCloudRoomCodeAsync(
+                lan.Id,
+                new("NEWLAN", lan.RowVersion),
+                default));
+        Assert.Equal(ErrorCodes.InvalidStateTransition, lanError.Code);
+
+        var stale = await Assert.ThrowsAsync<ApiException>(() =>
+            service.ChangePublicCloudRoomCodeAsync(
+                recoverable.Id,
+                new("NEWSTALE", "stale-row-version"),
+                default));
+        Assert.Equal(ErrorCodes.ConcurrencyConflict, stale.Code);
+
+        var activity = await Assert.ThrowsAsync<ApiException>(() =>
+            service.ChangePublicCloudRoomCodeAsync(
+                withActivity.Id,
+                new("NEWACT", withActivity.RowVersion),
+                default));
+        Assert.Equal(ErrorCodes.InvalidStateTransition, activity.Code);
+
+        var duplicate = await Assert.ThrowsAsync<ApiException>(() =>
+            service.ChangePublicCloudRoomCodeAsync(
+                recoverable.Id,
+                new("TAKEN133", recoverable.RowVersion),
+                default));
+        Assert.Equal(ErrorCodes.RoomCodeConflict, duplicate.Code);
+        Assert.Equal(4, await database.Context.ExamSessionsSet.CountAsync());
+        Assert.Equal("OLD133", recoverable.RoomCode);
+        Assert.Equal(0, signal.PulseCount);
     }
 
     [Fact]
@@ -575,6 +881,13 @@ public sealed class SixFindingsV133BackendTests
         SessionAccessMode.PublicCloud,
         SessionAdmissionMode.OpenRequest);
 
+    private static string RoomConflictFailure() =>
+        JsonSerializer.Serialize(
+            new CloudSyncFailure(
+                ErrorCodes.RoomCodeConflict,
+                "Mã phòng PublicCloud đang hoạt động đã được sử dụng trong tổ chức."),
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
     private static async Task WaitUntilAsync(Func<Task<bool>> condition)
     {
         for (var i = 0; i < 200 && !await condition(); i++)
@@ -614,7 +927,7 @@ public sealed class SixFindingsV133BackendTests
             Task.FromResult(false);
     }
 
-    private sealed class SuccessfulPushCloud : ICloudAdapter
+    private class SuccessfulPushCloud : ICloudAdapter
     {
         public int HealthChecks { get; private set; }
         public bool HealthResult { get; init; } = true;
@@ -630,7 +943,7 @@ public sealed class SixFindingsV133BackendTests
         }
         public Task<CloudPreflightResult> PreflightAsync(CancellationToken cancellationToken) =>
             throw new NotSupportedException();
-        public Task<CloudPushResult> PushAsync(
+        public virtual Task<CloudPushResult> PushAsync(
             SyncQueueItem item,
             Func<CancellationToken, Task>? checkpoint,
             CancellationToken cancellationToken)
@@ -653,6 +966,50 @@ public sealed class SixFindingsV133BackendTests
             string destinationPath,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
+    }
+
+    private sealed class RoomConflictPushCloud : SuccessfulPushCloud
+    {
+        public int SessionPushCount { get; private set; }
+
+        public override Task<CloudPushResult> PushAsync(
+            SyncQueueItem item,
+            Func<CancellationToken, Task>? checkpoint,
+            CancellationToken cancellationToken)
+        {
+            if (string.Equals(item.EntityType, "exam_sessions", StringComparison.Ordinal))
+            {
+                SessionPushCount++;
+                throw new ApiException(
+                    ErrorCodes.RoomCodeConflict,
+                    "Mã phòng PublicCloud đang hoạt động đã được sử dụng trong tổ chức.",
+                    409);
+            }
+
+            return base.PushAsync(item, checkpoint, cancellationToken);
+        }
+    }
+
+    private sealed class RecoverableRoomConflictPushCloud : SuccessfulPushCloud
+    {
+        public int SessionPushCount { get; private set; }
+
+        public override Task<CloudPushResult> PushAsync(
+            SyncQueueItem item,
+            Func<CancellationToken, Task>? checkpoint,
+            CancellationToken cancellationToken)
+        {
+            if (string.Equals(item.EntityType, "exam_sessions", StringComparison.Ordinal))
+            {
+                SessionPushCount++;
+                if (item.PayloadJson.Contains("\"room_code\":\"PUB133\"", StringComparison.Ordinal))
+                    throw new ApiException(
+                        ErrorCodes.RoomCodeConflict,
+                        "Mã phòng PublicCloud đang hoạt động đã được sử dụng trong tổ chức.",
+                        409);
+            }
+            return base.PushAsync(item, checkpoint, cancellationToken);
+        }
     }
 
     private sealed class TestStoragePaths(string root) : IStoragePaths

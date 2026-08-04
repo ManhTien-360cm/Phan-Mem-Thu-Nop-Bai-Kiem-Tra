@@ -45,6 +45,8 @@ RestoreBootstrap.ApplyPendingRestore(bootstrapRoot);
 
 builder.Services.AddExamTransferInfrastructure(builder.Configuration);
 builder.Services.AddSingleton<IRealtimePublisher, SignalRRealtimePublisher>();
+builder.Services.AddSingleton<IOnlyLanStudentNotificationTransport, SignalROnlyLanStudentNotificationTransport>();
+builder.Services.AddScoped<ExamTransfer.Infrastructure.Services.OnlyLanStudentNotificationDispatcher>();
 builder.Services.AddSignalR().AddJsonProtocol(o => o.PayloadSerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddControllers().AddJsonOptions(o => o.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddEndpointsApiExplorer();
@@ -90,6 +92,7 @@ builder.Services.AddAuthorization(options =>
 builder.Services.AddHostedService<HeartbeatMonitorWorker>();
 builder.Services.AddHostedService<TransferCleanupWorker>();
 builder.Services.AddHostedService<CloudSyncWorker>();
+builder.Services.AddHostedService<OnlyLanRealtimeOutboxWorker>();
 builder.Services.AddSingleton<PublicCloudPullWorker>();
 builder.Services.AddSingleton<IPublicCloudPullWorker>(sp => sp.GetRequiredService<PublicCloudPullWorker>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<PublicCloudPullWorker>());

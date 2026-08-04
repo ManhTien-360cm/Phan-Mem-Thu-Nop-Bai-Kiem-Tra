@@ -31,6 +31,8 @@ internal static class SubmissionMutationPayloads
         client_submitted_at = submission.ClientSubmittedAtUtc,
         server_received_at = submission.ServerReceivedAtUtc,
         deadline_at = submission.DeadlineUtc,
+        computed_is_late = submission.ComputedIsLate,
+        late_override = submission.LateOverride,
         is_late = submission.IsLate,
         is_official = submission.IsOfficial,
         receipt_code = submission.ReceiptCode,
